@@ -1,0 +1,1160 @@
+{% extends "base.html" %}
+
+{% block title %}{{ s.nse_code }} - {{ s.stock_name }} | {{ APP_TITLE }}{% endblock %}
+
+{# ───────────────────────── MACROS ───────────────────────── #}
+
+{# Metric card: title, value, optional comparison vs sector & industry #}
+{% macro metric_card(title, value, fmt_fn="fmt", sector_val=None, industry_val=None, invert=false) %}
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 hover:shadow-md transition-shadow">
+    <div class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">{{ title }}</div>
+    <div class="text-2xl font-bold text-gray-900">
+        {% if value is not none %}
+            {% if fmt_fn == "pct" %}{{ value|pct }}{% else %}{{ value|fmt }}{% endif %}
+        {% else %}--{% endif %}
+    </div>
+    {% if sector_val is not none or industry_val is not none %}
+    <div class="mt-2 flex gap-3 text-xs">
+        {% if sector_val is not none %}
+        <span class="text-gray-400">Sector: <span class="font-semibold {{ (value - sector_val)|sign_class(invert) if value is not none and sector_val is not none else 'text-gray-400' }}">{{ sector_val|fmt }}</span></span>
+        {% endif %}
+        {% if industry_val is not none %}
+        <span class="text-gray-400">Ind: <span class="font-semibold {{ (value - industry_val)|sign_class(invert) if value is not none and industry_val is not none else 'text-gray-400' }}">{{ industry_val|fmt }}</span></span>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Simple stat row for tables #}
+{% macro stat_row(label, latest, avg3=None, avg5=None, trend=None, is_pct=true) %}
+<tr class="border-b border-gray-50 hover:bg-gray-50/50">
+    <td class="py-2.5 px-3 text-sm font-medium text-gray-700">{{ label }}</td>
+    <td class="py-2.5 px-3 text-sm text-right font-semibold">
+        {% if latest is not none %}{% if is_pct %}{{ latest|pct }}{% else %}{{ latest|fmt }}{% endif %}{% else %}--{% endif %}
+    </td>
+    <td class="py-2.5 px-3 text-sm text-right text-gray-600">
+        {% if avg3 is not none %}{% if is_pct %}{{ avg3|pct }}{% else %}{{ avg3|fmt }}{% endif %}{% else %}--{% endif %}
+    </td>
+    <td class="py-2.5 px-3 text-sm text-right text-gray-600">
+        {% if avg5 is not none %}{% if is_pct %}{{ avg5|pct }}{% else %}{{ avg5|fmt }}{% endif %}{% else %}--{% endif %}
+    </td>
+    <td class="py-2.5 px-3 text-sm text-center">
+        {% if trend is not none %}
+            <span class="{{ trend|sign_class }} text-lg font-bold">{{ trend|trend_arrow }}</span>
+        {% else %}--{% endif %}
+    </td>
+</tr>
+{% endmacro %}
+
+{# Growth timeline card #}
+{% macro growth_card(label, value) %}
+<div class="flex flex-col items-center rounded-lg border {{ 'border-green-200 bg-green-50' if value is not none and value > 0 else ('border-red-200 bg-red-50' if value is not none and value < 0 else 'border-gray-200 bg-gray-50') }} p-4 min-w-[120px]">
+    <span class="text-xs font-medium text-gray-500 mb-1">{{ label }}</span>
+    <span class="text-xl font-bold {{ 'text-green-700' if value is not none and value > 0 else ('text-red-700' if value is not none and value < 0 else 'text-gray-400') }}">
+        {% if value is not none %}{{ value|pct }}{% else %}--{% endif %}
+    </span>
+</div>
+{% endmacro %}
+
+{# Flag chip #}
+{% macro flag_chip(flag_key, flag_value) %}
+{% set label = FLAG_LABELS.get(flag_key, flag_key) %}
+<div class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+    {{ 'bg-red-50 text-red-700 border border-red-200' if flag_value else 'bg-gray-50 text-gray-400 border border-gray-200' }}">
+    {% if flag_value %}
+        <svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg>
+    {% else %}
+        <svg class="w-4 h-4 text-gray-300 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+    {% endif %}
+    {{ label }}
+</div>
+{% endmacro %}
+
+
+{% block content %}
+
+{# ═══════════════════════════ STICKY HEADER ═══════════════════════════ #}
+<div class="sticky top-14 z-40 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-white/95 backdrop-blur-sm border-b border-gray-200 shadow-sm mb-6">
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+
+        {# Left: Name + breadcrumb #}
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+                <h1 class="text-xl lg:text-2xl font-bold text-gray-900 truncate">{{ s.stock_name or '--' }}</h1>
+                <span class="px-2 py-0.5 rounded text-xs font-bold bg-gray-800 text-white flex-shrink-0">{{ s.nse_code or '--' }}</span>
+            </div>
+            <div class="flex items-center gap-2 text-sm text-gray-500 flex-wrap">
+                <a href="/sectors/{{ s.sector|urlencode }}" class="hover:text-emerald-600">{{ s.sector or '--' }}</a>
+                <svg class="w-3 h-3 text-gray-300" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
+                <span>{{ s.industry or '--' }}</span>
+                <span class="text-gray-300">|</span>
+                <span>MCap: <strong class="text-gray-700">{{ s.market_cap|fmt }}Cr</strong></span>
+                <span class="text-gray-300">|</span>
+                <span>LTP: <strong class="text-gray-700">{{ s.ltp|fmt }}</strong></span>
+            </div>
+        </div>
+
+        {# Right: Badges + Compare button #}
+        <div class="flex items-center gap-2 flex-wrap flex-shrink-0">
+
+            {# Composite Score badge with mini gauge #}
+            <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border
+                {% set band = s.score_band or 'F' %}
+                {{ BAND_COLORS.get(band, BAND_COLORS['F']).bg }} {{ BAND_COLORS.get(band, BAND_COLORS['F']).text }}">
+                <div class="relative w-8 h-8">
+                    <svg class="w-8 h-8 -rotate-90" viewBox="0 0 36 36">
+                        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity="0.3" stroke-width="3"/>
+                        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-width="3"
+                            stroke-dasharray="{{ ((s.composite_score or 0) / 100 * 88)|round(1) }} 88"
+                            stroke-linecap="round"/>
+                    </svg>
+                    <span class="absolute inset-0 flex items-center justify-center text-[9px] font-bold">{{ s.composite_score|fmt(0) if s.composite_score is not none else '--' }}</span>
+                </div>
+                <div class="text-xs leading-tight">
+                    <div class="font-bold">{{ band }}</div>
+                    <div class="opacity-80">Score</div>
+                </div>
+            </div>
+
+            {# Decision Bucket badge #}
+            {% set bucket = s.decision_bucket or 'SCREEN_FAILED' %}
+            {% set bc = BUCKET_COLORS.get(bucket, BUCKET_COLORS['SCREEN_FAILED']) %}
+            <span class="px-3 py-1.5 rounded-lg text-xs font-bold {{ bc.bg }} {{ bc.text }} border {{ bc.border }}">
+                {{ BUCKET_LABELS.get(bucket, bucket) }}
+            </span>
+
+            {# Quality Risk badge #}
+            {% set qr = s.quality_risk or 'HIGH' %}
+            {% set rc = RISK_COLORS.get(qr, RISK_COLORS['HIGH']) %}
+            <span class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold {{ rc.bg }} {{ rc.text }}">
+                <span class="w-2 h-2 rounded-full {{ rc.dot }}"></span>
+                {{ qr }} Risk
+            </span>
+
+            {# Valuation Band badge #}
+            {% set vb = s.valuation_band or 'Unknown' %}
+            {% set vc = VALUATION_COLORS.get(vb, VALUATION_COLORS['Unknown']) %}
+            <span class="px-3 py-1.5 rounded-lg text-xs font-bold {{ vc.bg }} {{ vc.text }}">
+                {{ vb|replace('_', ' ') }}
+            </span>
+
+            {# Compare link #}
+            <a href="/compare?stocks={{ s.nse_code }}"
+               class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200 transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                Compare
+            </a>
+        </div>
+    </div>
+
+    {# Investment thesis / Reject reason bar #}
+    {% if s.investment_thesis or s.reject_reason %}
+    <div class="mt-2 px-3 py-2 rounded-lg text-sm
+        {{ 'bg-emerald-50 text-emerald-800 border border-emerald-200' if s.investment_thesis and not s.reject_reason else 'bg-red-50 text-red-800 border border-red-200' }}">
+        {% if s.investment_thesis %}
+            <strong>Thesis:</strong> {{ s.investment_thesis }}
+        {% endif %}
+        {% if s.reject_reason %}
+            <strong>Concern:</strong> {{ s.reject_reason }}
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+
+{# ═══════════════════════════ TAB NAVIGATION ═══════════════════════════ #}
+<div x-data="{ tab: 'overview' }">
+
+    {# Tab bar #}
+    <div class="flex gap-1 overflow-x-auto pb-1 mb-6 border-b border-gray-200 -mx-1 px-1 scrollbar-hide">
+        {% set tabs = [
+            ('overview', 'Overview'), ('valuation', 'Valuation'), ('quality', 'Quality'),
+            ('growth', 'Growth'), ('cashflow', 'Cash Flow'), ('leverage', 'Leverage'),
+            ('ownership', 'Ownership'), ('redflags', 'Red Flags')
+        ] %}
+        {% for key, label in tabs %}
+        <button @click="tab = '{{ key }}'"
+                :class="tab === '{{ key }}'
+                    ? 'border-emerald-500 text-emerald-700 bg-emerald-50'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                class="whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 rounded-t-lg transition-colors flex-shrink-0">
+            {{ label }}
+            {% if key == 'redflags' and s.red_flag_count %}
+                <span class="ml-1 inline-flex items-center justify-center w-5 h-5 text-[10px] font-bold rounded-full
+                    {{ 'bg-red-100 text-red-700' if s.red_flag_count > 3 else ('bg-amber-100 text-amber-700' if s.red_flag_count > 0 else 'bg-gray-100 text-gray-500') }}">
+                    {{ s.red_flag_count }}
+                </span>
+            {% endif %}
+        </button>
+        {% endfor %}
+    </div>
+
+
+    {# ═══════════════════ OVERVIEW TAB ═══════════════════ #}
+    <div x-show="tab === 'overview'" x-cloak>
+
+        {# Key Metrics Grid #}
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+            {{ metric_card("P/E", s.pe, "fmt", s.sector_avg_pe, s.industry_avg_pe, true) }}
+            {{ metric_card("P/BV", s.pbv, "fmt", s.sector_avg_pbv, s.industry_avg_pbv, true) }}
+            {{ metric_card("ROE", s.roe_latest, "pct", s.sector_avg_roe, s.industry_avg_roe) }}
+            {{ metric_card("ROCE", s.roce_latest, "pct", s.sector_avg_roce, s.industry_avg_roce) }}
+            {{ metric_card("EV/EBITDA", s.ev_ebitda, "fmt", None, None, true) }}
+            {{ metric_card("PEG", s.peg, "fmt", s.sector_avg_peg, s.industry_avg_peg, true) }}
+        </div>
+
+        {# Radar chart + Key Info side by side #}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+
+            {# Radar chart #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Stock DNA Radar</h3>
+                <div class="relative" style="max-height: 340px;">
+                    <canvas id="radarChart"></canvas>
+                </div>
+            </div>
+
+            {# Key information card #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Key Information</h3>
+                <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                    {% set info_rows = [
+                        ("BSE Code", s.bse_code),
+                        ("ISIN", s.isin),
+                        ("Market Cap", (s.market_cap|fmt ~ " Cr") if s.market_cap is not none else "--"),
+                        ("Fiscal Year End", s.fiscal_year_end or "--"),
+                        ("Data Type", s.data_type or "--"),
+                        ("Years Available", s.years_available or "--"),
+                        ("Latest Year", s.latest_year or "--"),
+                        ("Financial Sector", "Yes" if s.is_financial_sector else "No"),
+                        ("Screen Eligible", "Yes" if s.screen_eligible else "No"),
+                        ("Conviction Override", s.conviction_override or "None"),
+                        ("Neglect Score", s.neglect_score|fmt if s.neglect_score is not none else "--"),
+                        ("Generic Candidate", "Yes" if s.generic_stock_candidate else "No"),
+                    ] %}
+                    {% for label, val in info_rows %}
+                    <div class="flex justify-between py-1.5 border-b border-gray-50">
+                        <span class="text-gray-500">{{ label }}</span>
+                        <span class="font-medium text-gray-900">{{ val if val is not none else '--' }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                {# Critical / major flags summary #}
+                {% if s.critical_flags or s.major_flags or s.primary_concern %}
+                <div class="mt-4 space-y-2">
+                    {% if s.critical_flags %}
+                    <div class="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-sm text-red-800">
+                        <strong>Critical:</strong> {{ s.critical_flags }}
+                    </div>
+                    {% endif %}
+                    {% if s.major_flags %}
+                    <div class="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
+                        <strong>Major:</strong> {{ s.major_flags }}
+                    </div>
+                    {% endif %}
+                    {% if s.primary_concern %}
+                    <div class="px-3 py-2 rounded-lg bg-orange-50 border border-orange-200 text-sm text-orange-800">
+                        <strong>Primary Concern:</strong> {{ s.primary_concern }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        {# Peer comparison #}
+        {% if peers %}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Sector Peers</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b-2 border-gray-200 text-left">
+                            <th class="py-2 px-3 font-semibold text-gray-600">Stock</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-right">MCap</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-right">PE</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-right">PBV</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-right">ROE</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-right">ROCE</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-right">Score</th>
+                            <th class="py-2 px-3 font-semibold text-gray-600 text-center">Band</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in peers %}
+                        <tr class="border-b border-gray-50 hover:bg-gray-50/50">
+                            <td class="py-2 px-3">
+                                <a href="/stock/{{ p.nse_code }}" class="text-emerald-600 hover:text-emerald-800 font-medium">{{ p.nse_code }}</a>
+                            </td>
+                            <td class="py-2 px-3 text-right">{{ p.market_cap|fmt }}</td>
+                            <td class="py-2 px-3 text-right">{{ p.pe|fmt }}</td>
+                            <td class="py-2 px-3 text-right">{{ p.pbv|fmt }}</td>
+                            <td class="py-2 px-3 text-right">{{ p.roe_latest|pct }}</td>
+                            <td class="py-2 px-3 text-right">{{ p.roce_latest|pct }}</td>
+                            <td class="py-2 px-3 text-right font-semibold">{{ p.composite_score|fmt }}</td>
+                            <td class="py-2 px-3 text-center">
+                                {% set pb = p.score_band or 'F' %}
+                                <span class="inline-block px-2 py-0.5 rounded text-xs font-bold {{ BAND_COLORS.get(pb, BAND_COLORS['F']).bg }} {{ BAND_COLORS.get(pb, BAND_COLORS['F']).text }}">{{ pb }}</span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+
+    {# ═══════════════════ VALUATION TAB ═══════════════════ #}
+    <div x-show="tab === 'valuation'" x-cloak>
+
+        {# Multiples cards #}
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mb-8">
+            {{ metric_card("P/E Ratio", s.pe, "fmt", s.sector_avg_pe, s.industry_avg_pe, true) }}
+            {{ metric_card("P/E (TTM)", s.pe_ttm, "fmt") }}
+            {{ metric_card("Price/Book", s.pbv, "fmt", s.sector_avg_pbv, s.industry_avg_pbv, true) }}
+            {{ metric_card("EV/EBITDA", s.ev_ebitda, "fmt") }}
+            {{ metric_card("PEG Ratio", s.peg, "fmt", s.sector_avg_peg, s.industry_avg_peg, true) }}
+            {{ metric_card("P/Sales", s.price_to_sales, "fmt") }}
+            {{ metric_card("Earnings Yield", s.earnings_yield, "pct") }}
+            {{ metric_card("Valuation Score", s.valuation_comfort_score, "fmt") }}
+        </div>
+
+        {# 52 Week Range #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">52-Week Price Range</h3>
+            <div class="flex items-center gap-4">
+                <div class="text-right min-w-[80px]">
+                    <div class="text-xs text-gray-400">52W Low</div>
+                    <div class="text-lg font-bold text-red-600">{{ s.week52_low|fmt if s.week52_low is not none else '--' }}</div>
+                </div>
+                <div class="flex-1 relative h-8">
+                    {# Background bar #}
+                    <div class="absolute inset-y-2 left-0 right-0 bg-gradient-to-r from-red-100 via-amber-100 to-green-100 rounded-full"></div>
+                    {# Position marker #}
+                    {% if s.price_position_52w is not none %}
+                    <div class="absolute top-0 h-8 flex flex-col items-center"
+                         style="left: {{ [0, [s.price_position_52w, 100]|min]|max }}%;">
+                        <div class="w-0.5 h-2 bg-gray-800"></div>
+                        <div class="w-4 h-4 rounded-full bg-gray-800 border-2 border-white shadow"></div>
+                        <div class="text-[10px] font-bold text-gray-700 mt-0.5">{{ s.ltp|fmt }}</div>
+                    </div>
+                    {% endif %}
+                </div>
+                <div class="text-left min-w-[80px]">
+                    <div class="text-xs text-gray-400">52W High</div>
+                    <div class="text-lg font-bold text-green-600">{{ s.week52_high|fmt if s.week52_high is not none else '--' }}</div>
+                </div>
+            </div>
+            {% if s.price_position_52w is not none %}
+            <div class="text-center mt-2 text-xs text-gray-500">
+                Position: <strong>{{ s.price_position_52w|fmt }}%</strong> from 52-week low
+            </div>
+            {% endif %}
+        </div>
+
+        {# Returns section #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Returns &amp; Relative Performance</h3>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div class="text-center p-3 rounded-lg {{ 'bg-green-50' if s.return_1yr is not none and s.return_1yr > 0 else 'bg-red-50' if s.return_1yr is not none else 'bg-gray-50' }}">
+                    <div class="text-xs text-gray-500 mb-1">1Y Return</div>
+                    <div class="text-xl font-bold {{ s.return_1yr|sign_class }}">{{ s.return_1yr|pct }}</div>
+                </div>
+                <div class="text-center p-3 rounded-lg {{ 'bg-green-50' if s.returns_vs_nifty50_qtr is not none and s.returns_vs_nifty50_qtr > 0 else 'bg-red-50' if s.returns_vs_nifty50_qtr is not none else 'bg-gray-50' }}">
+                    <div class="text-xs text-gray-500 mb-1">vs Nifty50 (Qtr)</div>
+                    <div class="text-xl font-bold {{ s.returns_vs_nifty50_qtr|sign_class }}">{{ s.returns_vs_nifty50_qtr|pct }}</div>
+                </div>
+                <div class="text-center p-3 rounded-lg {{ 'bg-green-50' if s.returns_vs_sector_qtr is not none and s.returns_vs_sector_qtr > 0 else 'bg-red-50' if s.returns_vs_sector_qtr is not none else 'bg-gray-50' }}">
+                    <div class="text-xs text-gray-500 mb-1">vs Sector (Qtr)</div>
+                    <div class="text-xl font-bold {{ s.returns_vs_sector_qtr|sign_class }}">{{ s.returns_vs_sector_qtr|pct }}</div>
+                </div>
+                <div class="text-center p-3 rounded-lg {{ 'bg-green-50' if s.return_vs_nifty_1yr is not none and s.return_vs_nifty_1yr > 0 else 'bg-red-50' if s.return_vs_nifty_1yr is not none else 'bg-gray-50' }}">
+                    <div class="text-xs text-gray-500 mb-1">vs Nifty (1Y)</div>
+                    <div class="text-xl font-bold {{ s.return_vs_nifty_1yr|sign_class }}">{{ s.return_vs_nifty_1yr|pct }}</div>
+                </div>
+            </div>
+        </div>
+
+        {# Enterprise value & other absolute numbers #}
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {{ metric_card("Enterprise Value", s.enterprise_value, "fmt") }}
+            {{ metric_card("Market Cap", s.market_cap, "fmt") }}
+            {{ metric_card("Book Value/Share", s.book_value_per_share, "fmt") }}
+            {{ metric_card("EPS", s.eps, "fmt") }}
+        </div>
+    </div>
+
+
+    {# ═══════════════════ QUALITY TAB ═══════════════════ #}
+    <div x-show="tab === 'quality'" x-cloak>
+
+        {# Gauge row #}
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+
+            {# Business Quality Score gauge #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex flex-col items-center">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Business Quality</div>
+                <div class="relative w-28 h-28">
+                    <svg class="w-28 h-28 -rotate-90" viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="50" fill="none" stroke="#e5e7eb" stroke-width="10"/>
+                        <circle cx="60" cy="60" r="50" fill="none"
+                            stroke="{{ '#10b981' if s.business_quality_score is not none and s.business_quality_score >= 70 else ('#f59e0b' if s.business_quality_score is not none and s.business_quality_score >= 40 else '#ef4444') }}"
+                            stroke-width="10"
+                            stroke-dasharray="{{ ((s.business_quality_score or 0) / 100 * 314)|round(1) }} 314"
+                            stroke-linecap="round"/>
+                    </svg>
+                    <div class="absolute inset-0 flex flex-col items-center justify-center">
+                        <span class="text-2xl font-bold text-gray-900">{{ s.business_quality_score|fmt(0) if s.business_quality_score is not none else '--' }}</span>
+                        <span class="text-[10px] text-gray-400">/100</span>
+                    </div>
+                </div>
+            </div>
+
+            {# Piotroski Score gauge #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex flex-col items-center">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Piotroski F-Score</div>
+                <div class="relative w-28 h-28">
+                    <svg class="w-28 h-28 -rotate-90" viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="50" fill="none" stroke="#e5e7eb" stroke-width="10"/>
+                        <circle cx="60" cy="60" r="50" fill="none"
+                            stroke="{{ '#10b981' if s.piotroski_score is not none and s.piotroski_score >= 7 else ('#f59e0b' if s.piotroski_score is not none and s.piotroski_score >= 4 else '#ef4444') }}"
+                            stroke-width="10"
+                            stroke-dasharray="{{ ((s.piotroski_score or 0) / 9 * 314)|round(1) }} 314"
+                            stroke-linecap="round"/>
+                    </svg>
+                    <div class="absolute inset-0 flex flex-col items-center justify-center">
+                        <span class="text-2xl font-bold text-gray-900">{{ s.piotroski_score|fmt(0) if s.piotroski_score is not none else '--' }}</span>
+                        <span class="text-[10px] text-gray-400">/9</span>
+                    </div>
+                </div>
+                {% if s.piotroski_assessment %}
+                <div class="mt-2 text-xs font-medium text-gray-500">{{ s.piotroski_assessment }}</div>
+                {% endif %}
+            </div>
+
+            {# Earnings Quality gauge #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex flex-col items-center">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Earnings Quality</div>
+                <div class="flex flex-col items-center justify-center w-28 h-28">
+                    {% set eq = s.earnings_quality or 'Unknown' %}
+                    {% if eq == 'Clean' %}
+                    <span class="text-3xl font-bold text-green-600">&#10003;</span>
+                    <span class="badge bg-green-100 text-green-800 mt-2">Clean</span>
+                    {% elif eq == 'Mixed' %}
+                    <span class="text-3xl font-bold text-amber-500">~</span>
+                    <span class="badge bg-amber-100 text-amber-800 mt-2">Mixed</span>
+                    {% elif eq == 'Aggressive' %}
+                    <span class="text-3xl font-bold text-red-600">!</span>
+                    <span class="badge bg-red-100 text-red-800 mt-2">Aggressive</span>
+                    {% else %}
+                    <span class="text-2xl font-bold text-gray-400">--</span>
+                    <span class="badge bg-gray-100 text-gray-600 mt-2">{{ eq }}</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            {# Additional quality info #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Quality Indicators</div>
+                <div class="space-y-3 text-sm">
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Leverage Driven</span>
+                        <span class="font-medium {{ 'text-red-600' if s.leverage_driven else 'text-green-600' }}">{{ "Yes" if s.leverage_driven else "No" }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Exceptional Items</span>
+                        <span class="font-medium {{ 'text-red-600' if s.exceptional_items_count is not none and s.exceptional_items_count >= 3 else 'text-gray-900' }}">{{ s.exceptional_items_count if s.exceptional_items_count is not none else '--' }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">Other Income % PAT</span>
+                        <span class="font-medium {{ 'text-amber-600' if s.other_income_pct_pat is not none and s.other_income_pct_pat > 20 else 'text-gray-900' }}">{{ s.other_income_pct_pat|pct }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">EBITDA Margin</span>
+                        <span class="font-medium text-gray-900">{{ s.ebitda_margin|pct }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-500">ROIC</span>
+                        <span class="font-medium text-gray-900">{{ s.roic|pct }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Profitability Matrix #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Profitability Matrix</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="border-b-2 border-gray-200">
+                            <th class="py-2 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Metric</th>
+                            <th class="py-2 px-3 text-right text-xs font-semibold text-gray-500 uppercase">Latest</th>
+                            <th class="py-2 px-3 text-right text-xs font-semibold text-gray-500 uppercase">3Yr Avg</th>
+                            <th class="py-2 px-3 text-right text-xs font-semibold text-gray-500 uppercase">5Yr Avg</th>
+                            <th class="py-2 px-3 text-center text-xs font-semibold text-gray-500 uppercase">Trend</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{ stat_row("Return on Equity", s.roe_latest, s.roe_3yr_avg, s.roe_5yr_avg, s.roe_trend) }}
+                        {{ stat_row("Return on Capital", s.roce_latest, s.roce_3yr_avg, s.roce_5yr_avg, s.roce_trend) }}
+                        {{ stat_row("Return on Assets", s.roa_latest) }}
+                        {{ stat_row("Operating Margin", s.opm_latest, None, None, s.opm_trend) }}
+                        {{ stat_row("OPM (TTM)", s.opm_ttm) }}
+                        {{ stat_row("Net Profit Margin", s.npm_latest, None, None, s.npm_trend) }}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+
+    {# ═══════════════════ GROWTH TAB ═══════════════════ #}
+    <div x-show="tab === 'growth'" x-cloak>
+
+        {# Revenue Growth Timeline #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Revenue Growth</h3>
+            <div class="flex flex-wrap gap-4">
+                {{ growth_card("Qtr YoY", s.revenue_growth_qtr_yoy) }}
+                {{ growth_card("TTM", s.revenue_growth_ttm) }}
+                {{ growth_card("1 Year", s.revenue_growth_1yr) }}
+                {{ growth_card("3Yr CAGR", s.revenue_cagr_3yr) }}
+            </div>
+        </div>
+
+        {# Net Profit Growth Timeline #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Profit Growth</h3>
+            <div class="flex flex-wrap gap-4">
+                {{ growth_card("Qtr YoY", s.np_growth_qtr_yoy) }}
+                {{ growth_card("TTM", s.np_growth_ttm) }}
+                {{ growth_card("Annual", s.np_growth) }}
+                {{ growth_card("EPS 3Yr", s.eps_growth_3yr) }}
+            </div>
+        </div>
+
+        {# Growth quality indicators + Absolute numbers #}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            {# Growth quality #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Growth Quality</h3>
+                <div class="space-y-4">
+                    {# Revenue Volatility #}
+                    <div>
+                        <div class="flex justify-between text-sm mb-1">
+                            <span class="text-gray-500">Revenue Volatility</span>
+                            <span class="font-semibold {{ 'text-green-600' if s.revenue_volatility is not none and s.revenue_volatility < 20 else ('text-red-600' if s.revenue_volatility is not none and s.revenue_volatility > 40 else 'text-amber-600') }}">
+                                {{ s.revenue_volatility|pct }}
+                            </span>
+                        </div>
+                        {% if s.revenue_volatility is not none %}
+                        <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full {{ 'bg-green-500' if s.revenue_volatility < 20 else ('bg-red-500' if s.revenue_volatility > 40 else 'bg-amber-500') }}"
+                                 style="width: {{ [s.revenue_volatility, 100]|min }}%"></div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {# Profit Consistency #}
+                    <div>
+                        <div class="flex justify-between text-sm mb-1">
+                            <span class="text-gray-500">Profit Consistency</span>
+                            <span class="font-semibold {{ 'text-green-600' if s.profit_consistency is not none and s.profit_consistency >= 80 else ('text-red-600' if s.profit_consistency is not none and s.profit_consistency < 50 else 'text-amber-600') }}">
+                                {{ s.profit_consistency|pct }}
+                            </span>
+                        </div>
+                        {% if s.profit_consistency is not none %}
+                        <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full {{ 'bg-green-500' if s.profit_consistency >= 80 else ('bg-red-500' if s.profit_consistency < 50 else 'bg-amber-500') }}"
+                                 style="width: {{ [s.profit_consistency, 100]|min }}%"></div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {# Profit Growth Consistency #}
+                    <div>
+                        <div class="flex justify-between text-sm mb-1">
+                            <span class="text-gray-500">Profit Growth Consistency</span>
+                            <span class="font-semibold {{ 'text-green-600' if s.profit_growth_consistency is not none and s.profit_growth_consistency >= 80 else ('text-red-600' if s.profit_growth_consistency is not none and s.profit_growth_consistency < 50 else 'text-amber-600') }}">
+                                {{ s.profit_growth_consistency|pct }}
+                            </span>
+                        </div>
+                        {% if s.profit_growth_consistency is not none %}
+                        <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full {{ 'bg-green-500' if s.profit_growth_consistency >= 80 else ('bg-red-500' if s.profit_growth_consistency < 50 else 'bg-amber-500') }}"
+                                 style="width: {{ [s.profit_growth_consistency, 100]|min }}%"></div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {# Growth Durability Score #}
+                    <div>
+                        <div class="flex justify-between text-sm mb-1">
+                            <span class="text-gray-500">Growth Durability Score</span>
+                            <span class="font-semibold {{ 'text-green-600' if s.growth_durability_score is not none and s.growth_durability_score >= 70 else ('text-red-600' if s.growth_durability_score is not none and s.growth_durability_score < 40 else 'text-amber-600') }}">
+                                {{ s.growth_durability_score|fmt }}
+                            </span>
+                        </div>
+                        {% if s.growth_durability_score is not none %}
+                        <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full {{ 'bg-green-500' if s.growth_durability_score >= 70 else ('bg-red-500' if s.growth_durability_score < 40 else 'bg-amber-500') }}"
+                                 style="width: {{ [s.growth_durability_score, 100]|min }}%"></div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            {# Absolute numbers #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Absolute Numbers</h3>
+                <div class="space-y-3 text-sm">
+                    {% set abs_rows = [
+                        ("Total Revenue", s.total_revenue, "Cr"),
+                        ("EPS", s.eps, ""),
+                        ("Book Value / Share", s.book_value_per_share, ""),
+                        ("ROIC", s.roic, "%"),
+                        ("Asset Turnover", s.asset_turnover, "x"),
+                    ] %}
+                    {% for label, val, unit in abs_rows %}
+                    <div class="flex justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-500">{{ label }}</span>
+                        <span class="font-semibold text-gray-900">
+                            {% if val is not none %}{{ val|fmt }}{{ unit }}{% else %}--{% endif %}
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    {# ═══════════════════ CASH FLOW TAB ═══════════════════ #}
+    <div x-show="tab === 'cashflow'" x-cloak>
+
+        {# CFO health cards #}
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
+            {{ metric_card("CFO (Latest)", s.cfo_latest, "fmt") }}
+            {{ metric_card("PAT (Latest)", s.pat_latest, "fmt") }}
+            {{ metric_card("CFO/PAT", s.cfo_pat_latest, "pct") }}
+            {{ metric_card("CFO/PAT 3Yr", s.cfo_pat_3yr_avg, "pct") }}
+            {{ metric_card("CFROA", s.cfroa, "pct") }}
+        </div>
+
+        {# Positive CFO years progress bar #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Cash Flow Consistency</h3>
+            <div class="flex items-center gap-4 mb-3">
+                <span class="text-sm text-gray-500">Positive CFO Years</span>
+                <div class="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden">
+                    {% set max_years = s.years_available or 5 %}
+                    {% set pct_positive = ((s.positive_cfo_years or 0) / max_years * 100) if max_years > 0 else 0 %}
+                    <div class="h-full rounded-full transition-all duration-500
+                        {{ 'bg-green-500' if pct_positive >= 80 else ('bg-amber-500' if pct_positive >= 60 else 'bg-red-500') }}"
+                         style="width: {{ pct_positive|round(1) }}%"></div>
+                </div>
+                <span class="text-sm font-bold text-gray-900 min-w-[60px] text-right">
+                    {{ s.positive_cfo_years if s.positive_cfo_years is not none else '--' }} / {{ max_years }}
+                </span>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6">
+                <div class="flex justify-between p-3 rounded-lg bg-gray-50 text-sm">
+                    <span class="text-gray-500">CFO Trend</span>
+                    <span class="font-semibold {{ s.cfo_trend|sign_class }}">
+                        {{ s.cfo_trend|trend_arrow }}
+                        {% if s.cfo_trend is not none %} ({{ s.cfo_trend|fmt }}){% endif %}
+                    </span>
+                </div>
+                <div class="flex justify-between p-3 rounded-lg bg-gray-50 text-sm">
+                    <span class="text-gray-500">Accruals</span>
+                    <span class="font-semibold {{ s.accruals|sign_class(true) }}">{{ s.accruals|fmt }}</span>
+                </div>
+                <div class="flex justify-between p-3 rounded-lg bg-gray-50 text-sm">
+                    <span class="text-gray-500">Cash EPS</span>
+                    <span class="font-semibold text-gray-900">{{ s.ceps|fmt }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    {# ═══════════════════ LEVERAGE TAB ═══════════════════ #}
+    <div x-show="tab === 'leverage'" x-cloak>
+
+        {# Debt ratios #}
+        <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Debt &amp; Solvency</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
+            {{ metric_card("Debt/Equity", s.debt_equity, "fmt") }}
+            {{ metric_card("LT Debt/Equity", s.lt_debt_equity, "fmt") }}
+            {{ metric_card("Net Debt/EBITDA", s.net_debt_ebitda, "fmt") }}
+            {{ metric_card("Interest Coverage", s.interest_coverage, "fmt") }}
+            {{ metric_card("Financial Strength", s.financial_strength_score, "fmt") }}
+        </div>
+
+        {# Liquidity #}
+        <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Liquidity</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+            {{ metric_card("Current Ratio", s.current_ratio, "fmt") }}
+            {{ metric_card("Quick Ratio", s.quick_ratio, "fmt") }}
+            {{ metric_card("Total Debt", s.total_debt, "fmt") }}
+            {{ metric_card("Total Equity", s.total_equity, "fmt") }}
+        </div>
+
+        {# Balance sheet & Cash Conversion Cycle #}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {# Balance sheet summary #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Balance Sheet</h3>
+                <div class="space-y-3 text-sm">
+                    <div class="flex justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-500">Total Assets</span>
+                        <span class="font-semibold">{{ s.total_assets|fmt if s.total_assets is not none else '--' }} Cr</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-500">Total Debt</span>
+                        <span class="font-semibold">{{ s.total_debt|fmt if s.total_debt is not none else '--' }} Cr</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-500">Total Equity</span>
+                        <span class="font-semibold">{{ s.total_equity|fmt if s.total_equity is not none else '--' }} Cr</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-500">Asset Turnover</span>
+                        <span class="font-semibold">{{ s.asset_turnover|fmt if s.asset_turnover is not none else '--' }}x</span>
+                    </div>
+                    <div class="flex justify-between py-2">
+                        <span class="text-gray-500">Debt Trend</span>
+                        <span class="font-semibold {{ s.debt_trend|sign_class(true) }}">
+                            {{ s.debt_trend|trend_arrow }}
+                            {% if s.debt_trend is not none %} ({{ s.debt_trend|fmt }}){% endif %}
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            {# Cash Conversion Cycle #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Cash Conversion Cycle</h3>
+
+                {# Visual pipeline #}
+                <div class="flex items-center justify-between gap-2 mb-6 flex-wrap">
+                    <div class="text-center flex-1 min-w-[100px]">
+                        <div class="text-2xl font-bold text-blue-600">{{ s.receivable_days|fmt(0) if s.receivable_days is not none else '--' }}</div>
+                        <div class="text-xs text-gray-500">Receivable Days</div>
+                        <div class="text-xs {{ s.recv_days_trend|sign_class(true) }}">{{ s.recv_days_trend|trend_arrow }}</div>
+                    </div>
+                    <div class="text-2xl text-gray-300 font-light">+</div>
+                    <div class="text-center flex-1 min-w-[100px]">
+                        <div class="text-2xl font-bold text-purple-600">{{ s.inventory_days|fmt(0) if s.inventory_days is not none else '--' }}</div>
+                        <div class="text-xs text-gray-500">Inventory Days</div>
+                        <div class="text-xs {{ s.inv_days_trend|sign_class(true) }}">{{ s.inv_days_trend|trend_arrow }}</div>
+                    </div>
+                    <div class="text-2xl text-gray-300 font-light">-</div>
+                    <div class="text-center flex-1 min-w-[100px]">
+                        <div class="text-2xl font-bold text-amber-600">{{ s.payables_days|fmt(0) if s.payables_days is not none else '--' }}</div>
+                        <div class="text-xs text-gray-500">Payable Days</div>
+                    </div>
+                    <div class="text-2xl text-gray-300 font-light">=</div>
+                    <div class="text-center flex-1 min-w-[100px] p-2 rounded-lg bg-gray-50 border border-gray-200">
+                        <div class="text-2xl font-bold {{ 'text-green-600' if s.cash_conversion_cycle is not none and s.cash_conversion_cycle < 60 else ('text-red-600' if s.cash_conversion_cycle is not none and s.cash_conversion_cycle > 120 else 'text-amber-600') }}">
+                            {{ s.cash_conversion_cycle|fmt(0) if s.cash_conversion_cycle is not none else '--' }}
+                        </div>
+                        <div class="text-xs font-medium text-gray-700">CCC (days)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    {# ═══════════════════ OWNERSHIP TAB ═══════════════════ #}
+    <div x-show="tab === 'ownership'" x-cloak>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+
+            {# Donut Chart #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Shareholding Pattern</h3>
+                <div class="relative mx-auto" style="max-width: 300px; max-height: 300px;">
+                    <canvas id="ownershipChart"></canvas>
+                </div>
+            </div>
+
+            {# Shareholding details #}
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Shareholding Details</h3>
+                <div class="space-y-4">
+
+                    {# Promoter #}
+                    <div class="p-3 rounded-lg bg-emerald-50 border border-emerald-100">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm font-semibold text-emerald-800">Promoter</span>
+                            <span class="text-lg font-bold text-emerald-700">{{ s.promoter_holding|pct }}</span>
+                        </div>
+                        <div class="flex gap-4 text-xs text-emerald-600">
+                            <span>Pledge: <strong class="{{ 'text-red-600' if s.promoter_pledge is not none and s.promoter_pledge > 10 else 'text-emerald-700' }}">{{ s.promoter_pledge|pct }}</strong>
+                                {% if s.pledge_risk %}<span class="text-red-600 font-bold ml-1">({{ s.pledge_risk }})</span>{% endif %}
+                            </span>
+                            <span>1Yr Change:
+                                <strong class="{{ s.promoter_change_1yr|sign_class }}">
+                                    {{ s.promoter_change_1yr|pct if s.promoter_change_1yr is not none else '--' }}
+                                </strong>
+                            </span>
+                        </div>
+                    </div>
+
+                    {# FII #}
+                    <div class="p-3 rounded-lg bg-blue-50 border border-blue-100">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm font-semibold text-blue-800">FII</span>
+                            <span class="text-lg font-bold text-blue-700">{{ s.fii_holding|pct }}</span>
+                        </div>
+                        <div class="text-xs text-blue-600">
+                            1Yr Change: <strong class="{{ s.fii_change_1yr|sign_class }}">{{ s.fii_change_1yr|pct if s.fii_change_1yr is not none else '--' }}</strong>
+                        </div>
+                    </div>
+
+                    {# MF #}
+                    <div class="p-3 rounded-lg bg-purple-50 border border-purple-100">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm font-semibold text-purple-800">Mutual Funds</span>
+                            <span class="text-lg font-bold text-purple-700">{{ s.mf_holding|pct }}</span>
+                        </div>
+                        <div class="text-xs text-purple-600">
+                            1Yr Change: <strong class="{{ s.mf_change_1yr|sign_class }}">{{ s.mf_change_1yr|pct if s.mf_change_1yr is not none else '--' }}</strong>
+                        </div>
+                    </div>
+
+                    {# Institutional & Public #}
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="p-3 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                            <div class="text-xs text-gray-500">Institutional</div>
+                            <div class="text-lg font-bold text-gray-800">{{ s.institutional_holding|pct }}</div>
+                        </div>
+                        <div class="p-3 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                            <div class="text-xs text-gray-500">Public</div>
+                            <div class="text-lg font-bold text-gray-800">{{ s.public_holding|pct }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Insider sentiment #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Insider Activity</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="p-4 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                    <div class="text-xs text-gray-500 mb-1">Insider Action</div>
+                    <div class="text-lg font-bold text-gray-900">{{ s.insider_action or '--' }}</div>
+                </div>
+                <div class="p-4 rounded-lg border text-center
+                    {{ 'bg-green-50 border-green-200' if s.insider_sentiment and 'Positive' in (s.insider_sentiment or '') else ('bg-red-50 border-red-200' if s.insider_sentiment and 'Negative' in (s.insider_sentiment or '') else 'bg-gray-50 border-gray-200') }}">
+                    <div class="text-xs text-gray-500 mb-1">Insider Sentiment</div>
+                    <div class="text-lg font-bold">{{ s.insider_sentiment or '--' }}</div>
+                </div>
+                <div class="p-4 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                    <div class="text-xs text-gray-500 mb-1">Context</div>
+                    <div class="text-sm font-medium text-gray-700">{{ s.insider_context or '--' }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    {# ═══════════════════ RED FLAGS TAB ═══════════════════ #}
+    <div x-show="tab === 'redflags'" x-cloak>
+
+        {# Summary counts #}
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-center">
+                <div class="text-xs text-gray-500 mb-1">Total Red Flags</div>
+                <div class="text-3xl font-bold {{ 'text-red-600' if s.red_flag_count is not none and s.red_flag_count > 3 else ('text-amber-600' if s.red_flag_count is not none and s.red_flag_count > 0 else 'text-green-600') }}">
+                    {{ s.red_flag_count if s.red_flag_count is not none else '--' }}
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-center">
+                <div class="text-xs text-gray-500 mb-1">Quality Flags</div>
+                <div class="text-3xl font-bold {{ 'text-red-600' if s.quality_flag_count is not none and s.quality_flag_count > 2 else ('text-amber-600' if s.quality_flag_count is not none and s.quality_flag_count > 0 else 'text-green-600') }}">
+                    {{ s.quality_flag_count if s.quality_flag_count is not none else '--' }}
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-center">
+                <div class="text-xs text-gray-500 mb-1">Pricing Flags</div>
+                <div class="text-3xl font-bold {{ 'text-red-600' if s.pricing_flag_count is not none and s.pricing_flag_count > 2 else ('text-amber-600' if s.pricing_flag_count is not none and s.pricing_flag_count > 0 else 'text-green-600') }}">
+                    {{ s.pricing_flag_count if s.pricing_flag_count is not none else '--' }}
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-center">
+                <div class="text-xs text-gray-500 mb-1">Quality Risk</div>
+                <div class="text-lg font-bold {{ RISK_COLORS.get(s.quality_risk or 'HIGH', RISK_COLORS['HIGH']).text }}">
+                    {{ s.rf_quality_risk or '--' }}
+                </div>
+                {% if s.quality_severity %}
+                <div class="text-xs text-gray-500 mt-1">Severity: {{ s.quality_severity }}</div>
+                {% endif %}
+            </div>
+        </div>
+
+        {# Quality flags grid #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Quality Flags</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {% for flag_key in QUALITY_FLAGS %}
+                    {{ flag_chip(flag_key, s.get(flag_key)) }}
+                {% endfor %}
+            </div>
+        </div>
+
+        {# Pricing flags grid #}
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Pricing Flags</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {% for flag_key in PRICING_FLAGS %}
+                    {{ flag_chip(flag_key, s.get(flag_key)) }}
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+</div> {# End Alpine x-data tabs #}
+
+
+{# ═══════════════════════════ DIVIDENDS SECTION ═══════════════════════════ #}
+<div class="mt-8 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+    <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Dividends &amp; Corporate Actions</h3>
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
+        <div class="text-center p-3 rounded-lg bg-gray-50">
+            <div class="text-xs text-gray-500 mb-1">Dividends Paid</div>
+            <div class="text-xl font-bold text-gray-900">{{ s.dividend_count if s.dividend_count is not none else '--' }}</div>
+        </div>
+        <div class="text-center p-3 rounded-lg bg-gray-50">
+            <div class="text-xs text-gray-500 mb-1">Latest Dividend</div>
+            <div class="text-lg font-bold text-gray-900">{{ s.latest_dividend_amount|fmt if s.latest_dividend_amount is not none else '--' }}</div>
+            <div class="text-[10px] text-gray-400">{{ s.latest_dividend_date or '' }} {{ s.latest_dividend_type or '' }}</div>
+        </div>
+        <div class="text-center p-3 rounded-lg bg-gray-50">
+            <div class="text-xs text-gray-500 mb-1">5Yr Consistency</div>
+            <div class="text-lg font-bold {{ 'text-green-600' if s.dividend_5yr_consistency is not none and s.dividend_5yr_consistency >= 80 else 'text-gray-900' }}">{{ s.dividend_5yr_consistency|pct }}</div>
+        </div>
+        <div class="text-center p-3 rounded-lg bg-gray-50">
+            <div class="text-xs text-gray-500 mb-1">Div Trend</div>
+            <div class="text-lg font-bold {{ s.dividend_trend|sign_class }}">{{ s.dividend_trend|trend_arrow }}</div>
+        </div>
+        <div class="text-center p-3 rounded-lg bg-gray-50">
+            <div class="text-xs text-gray-500 mb-1">Total Paid</div>
+            <div class="text-lg font-bold text-gray-900">{{ s.total_dividends_paid|fmt if s.total_dividends_paid is not none else '--' }} Cr</div>
+        </div>
+        <div class="text-center p-3 rounded-lg bg-gray-50">
+            <div class="text-xs text-gray-500 mb-1">Corp Actions</div>
+            <div class="flex justify-center gap-2 text-xs mt-1">
+                <span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700" title="Bonus">B:{{ s.bonus_count if s.bonus_count is not none else 0 }}</span>
+                <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700" title="Split">S:{{ s.split_count if s.split_count is not none else 0 }}</span>
+                <span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="Rights">R:{{ s.rights_count if s.rights_count is not none else 0 }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+{# ═══════════════════════════ SECTOR CONTEXT TABLE ═══════════════════════════ #}
+<div class="mt-8 bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+    <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">
+        Sector &amp; Industry Benchmarks
+        <span class="text-xs font-normal text-gray-400 ml-2">{{ s.sector or '--' }} / {{ s.industry or '--' }}</span>
+    </h3>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b-2 border-gray-200">
+                    <th class="py-2.5 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Metric</th>
+                    <th class="py-2.5 px-3 text-right text-xs font-semibold text-emerald-600 uppercase">This Stock</th>
+                    <th class="py-2.5 px-3 text-right text-xs font-semibold text-blue-600 uppercase">Sector Avg</th>
+                    <th class="py-2.5 px-3 text-right text-xs font-semibold text-purple-600 uppercase">Industry Avg</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set bench = [
+                    ("PE Ratio", s.pe, s.sector_avg_pe, s.industry_avg_pe, false, true),
+                    ("PEG", s.peg, s.sector_avg_peg, s.industry_avg_peg, false, true),
+                    ("Price/Book", s.pbv, s.sector_avg_pbv, s.industry_avg_pbv, false, true),
+                    ("ROE %", s.roe_latest, s.sector_avg_roe, s.industry_avg_roe, true, false),
+                    ("ROCE %", s.roce_latest, s.sector_avg_roce, s.industry_avg_roce, true, false),
+                    ("ROA %", s.roa_latest, s.sector_avg_roa, s.industry_avg_roa, true, false),
+                    ("Market Cap (Cr)", s.market_cap, s.sector_avg_market_cap, s.industry_avg_market_cap, false, false),
+                ] %}
+                {% for label, stock_val, sect_val, ind_val, is_pct_val, invert in bench %}
+                <tr class="border-b border-gray-50 hover:bg-gray-50/50">
+                    <td class="py-2.5 px-3 font-medium text-gray-700">{{ label }}</td>
+                    <td class="py-2.5 px-3 text-right font-semibold text-gray-900">
+                        {% if stock_val is not none %}
+                            {% if is_pct_val %}{{ stock_val|pct }}{% else %}{{ stock_val|fmt }}{% endif %}
+                        {% else %}--{% endif %}
+                    </td>
+                    <td class="py-2.5 px-3 text-right text-blue-600">
+                        {% if sect_val is not none %}
+                            {% if is_pct_val %}{{ sect_val|pct }}{% else %}{{ sect_val|fmt }}{% endif %}
+                        {% else %}--{% endif %}
+                    </td>
+                    <td class="py-2.5 px-3 text-right text-purple-600">
+                        {% if ind_val is not none %}
+                            {% if is_pct_val %}{{ ind_val|pct }}{% else %}{{ ind_val|fmt }}{% endif %}
+                        {% else %}--{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+
+{# ═══════════════════════════ NEGLECT WARNING ═══════════════════════════ #}
+{% if s.neglect_age_warning %}
+<div class="mt-6 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
+    <strong>Data Age Warning:</strong> {{ s.neglect_age_warning }}
+</div>
+{% endif %}
+
+{% endblock %}
+
+
+{# ═══════════════════════════ SCRIPTS ═══════════════════════════ #}
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+
+    /* ── Radar Chart ─────────────────────────────────────────────── */
+    const radarCtx = document.getElementById('radarChart');
+    if (radarCtx) {
+        const bq  = {{ s.business_quality_score | default(0, true) | float }};
+        const vc  = {{ s.valuation_comfort_score | default(0, true) | float }};
+        const fs  = {{ s.financial_strength_score | default(0, true) | float }};
+        const gd  = {{ s.growth_durability_score | default(0, true) | float }};
+        const cfo = Math.min({{ (s.positive_cfo_years or 0) | float }} * 20, 100);
+        const pio = Math.min({{ (s.piotroski_score or 0) | float }} * 11.1, 100);
+
+        new Chart(radarCtx, {
+            type: 'radar',
+            data: {
+                labels: ['Business Quality', 'Valuation Comfort', 'Financial Strength',
+                         'Growth Durability', 'Cash Flow', 'Piotroski'],
+                datasets: [{
+                    label: '{{ s.nse_code }}',
+                    data: [bq, vc, fs, gd, cfo, pio],
+                    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                    borderColor: 'rgba(16, 185, 129, 0.8)',
+                    borderWidth: 2,
+                    pointBackgroundColor: 'rgba(16, 185, 129, 1)',
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                scales: {
+                    r: {
+                        min: 0,
+                        max: 100,
+                        ticks: {
+                            stepSize: 20,
+                            display: true,
+                            font: { size: 9 },
+                            color: '#9ca3af',
+                            backdropColor: 'transparent'
+                        },
+                        grid: { color: 'rgba(0,0,0,0.06)' },
+                        angleLines: { color: 'rgba(0,0,0,0.06)' },
+                        pointLabels: {
+                            font: { size: 11, weight: '500' },
+                            color: '#374151'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                return ctx.label + ': ' + ctx.raw.toFixed(1);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /* ── Ownership Donut Chart ───────────────────────────────────── */
+    const donutCtx = document.getElementById('ownershipChart');
+    if (donutCtx) {
+        const promoter = {{ s.promoter_holding | default(0, true) | float }};
+        const fii      = {{ s.fii_holding | default(0, true) | float }};
+        const mf       = {{ s.mf_holding | default(0, true) | float }};
+        const instOther = Math.max({{ s.institutional_holding | default(0, true) | float }} - fii - mf, 0);
+        const pub      = {{ s.public_holding | default(0, true) | float }};
+
+        /* Compute remaining to reach 100% (if any) */
+        const accounted = promoter + fii + mf + instOther + pub;
+        const other = Math.max(100 - accounted, 0);
+
+        const segments = [];
+        const labels = [];
+        const colors = [];
+
+        if (promoter > 0) { segments.push(promoter); labels.push('Promoter'); colors.push('#10b981'); }
+        if (fii > 0)      { segments.push(fii);      labels.push('FII');      colors.push('#3b82f6'); }
+        if (mf > 0)       { segments.push(mf);       labels.push('MF');       colors.push('#8b5cf6'); }
+        if (instOther > 0) { segments.push(instOther); labels.push('Other Inst'); colors.push('#6366f1'); }
+        if (pub > 0)      { segments.push(pub);       labels.push('Public');    colors.push('#f59e0b'); }
+        if (other > 0.5)  { segments.push(other);     labels.push('Other');     colors.push('#d1d5db'); }
+
+        new Chart(donutCtx, {
+            type: 'doughnut',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: segments,
+                    backgroundColor: colors,
+                    borderWidth: 2,
+                    borderColor: '#ffffff',
+                    hoverOffset: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                cutout: '62%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            padding: 16,
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            font: { size: 12 }
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                return ctx.label + ': ' + ctx.raw.toFixed(1) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+});
+</script>
+{% endblock %}

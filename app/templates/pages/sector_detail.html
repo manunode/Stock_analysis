@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sector.sector }} - {{ APP_TITLE }}{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<nav class="flex items-center gap-2 text-sm text-gray-500 mb-6">
+    <a href="/sectors" class="hover:text-emerald-600 transition-colors">Sectors</a>
+    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+    </svg>
+    <span class="text-gray-900 font-medium">{{ sector.sector }}</span>
+</nav>
+
+<!-- Sector Title -->
+<h1 class="text-3xl font-bold text-gray-900 mb-6">{{ sector.sector }}</h1>
+
+<!-- Metrics Cards Row -->
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4 mb-8">
+    {% set metrics = [
+        ('# Companies', sector.num_companies, false),
+        ('Avg MCap', sector.avg_market_cap | fmt, false),
+        ('Avg PE', sector.avg_pe | fmt, false),
+        ('Avg PBV', sector.avg_pbv | fmt, false),
+        ('Avg ROE', sector.avg_roe | pct, true),
+        ('Avg ROCE', sector.avg_roce | pct, true),
+        ('Avg ROA', sector.avg_roa | pct, false),
+    ] %}
+    {% for label, value, is_return in metrics %}
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">{{ label }}</div>
+        <div class="mt-1 text-xl font-bold
+            {% if is_return and value != '--' %}
+                {% if value | replace('%','') | replace(',','') | float > 10 %}text-green-600
+                {% elif value | replace('%','') | replace(',','') | float < 0 %}text-red-600
+                {% else %}text-gray-900{% endif %}
+            {% else %}text-gray-900{% endif %}">
+            {{ value }}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Decision Bucket Distribution -->
+{% if bucket_dist %}
+<div class="mb-8">
+    <h2 class="text-lg font-semibold text-gray-900 mb-3">Decision Distribution</h2>
+    <div class="flex flex-wrap gap-2">
+        {% for bd in bucket_dist %}
+        {% set bc = BUCKET_COLORS.get(bd.decision_bucket, {"bg": "bg-gray-400", "text": "text-gray-800"}) %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold {{ bc.bg }} {{ bc.text }}">
+            {{ BUCKET_LABELS.get(bd.decision_bucket, bd.decision_bucket) }}
+            <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/30 text-[10px] font-bold">
+                {{ bd.cnt }}
+            </span>
+        </span>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Industries Sub-table -->
+{% if industries %}
+<div class="mb-8">
+    <h2 class="text-lg font-semibold text-gray-900 mb-3">Industries</h2>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-gray-50 border-b border-gray-200">
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Industry</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600"># Companies</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Avg MCap</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Avg PE</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Avg ROE</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Avg ROCE</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for ind in industries %}
+                    <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-4 py-3 font-medium">
+                            <a href="/industry/{{ ind.industry }}" class="text-emerald-600 hover:text-emerald-700 hover:underline">
+                                {{ ind.industry }}
+                            </a>
+                        </td>
+                        <td class="px-4 py-3 text-gray-700 tabular-nums">{{ ind.num_companies }}</td>
+                        <td class="px-4 py-3 text-gray-700 tabular-nums">{{ ind.avg_market_cap | fmt }}</td>
+                        <td class="px-4 py-3 text-gray-700 tabular-nums">{{ ind.avg_pe | fmt }}</td>
+                        <td class="px-4 py-3 tabular-nums
+                            {% if ind.avg_roe is not none and ind.avg_roe > 10 %}text-green-600 font-semibold
+                            {% elif ind.avg_roe is not none and ind.avg_roe < 0 %}text-red-600 font-semibold
+                            {% else %}text-gray-700{% endif %}">
+                            {{ ind.avg_roe | pct }}
+                        </td>
+                        <td class="px-4 py-3 tabular-nums
+                            {% if ind.avg_roce is not none and ind.avg_roce > 10 %}text-green-600 font-semibold
+                            {% elif ind.avg_roce is not none and ind.avg_roce < 0 %}text-red-600 font-semibold
+                            {% else %}text-gray-700{% endif %}">
+                            {{ ind.avg_roce | pct }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Stocks Table -->
+{% if stocks %}
+<div>
+    <h2 class="text-lg font-semibold text-gray-900 mb-3">Stocks ({{ stocks | length }})</h2>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-gray-50 border-b border-gray-200">
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">NSE Code</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Name</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Industry</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Score</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Decision</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">Quality Risk</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">PE</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">ROE</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">ROCE</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-600">MCap</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for st in stocks %}
+                    {% set band = BAND_COLORS.get(st.score_band, {"bg": "bg-gray-400", "text": "text-white"}) %}
+                    {% set bc = BUCKET_COLORS.get(st.decision_bucket, {"bg": "bg-gray-400", "text": "text-gray-800"}) %}
+                    {% set rc = RISK_COLORS.get(st.quality_risk, {"bg": "bg-gray-100", "text": "text-gray-600"}) %}
+                    <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-4 py-3 font-medium">
+                            <a href="/stock/{{ st.nse_code }}" class="text-emerald-600 hover:text-emerald-700 hover:underline">
+                                {{ st.nse_code }}
+                            </a>
+                        </td>
+                        <td class="px-4 py-3 text-gray-700 max-w-[200px] truncate" title="{{ st.stock_name }}">
+                            {{ st.stock_name }}
+                        </td>
+                        <td class="px-4 py-3 text-gray-500 max-w-[160px] truncate" title="{{ st.industry }}">
+                            {{ st.industry }}
+                        </td>
+                        <td class="px-4 py-3">
+                            <span class="inline-block px-2 py-0.5 rounded text-xs font-bold {{ band.bg }} {{ band.text }}">
+                                {{ st.composite_score | fmt }} / {{ st.score_band or '--' }}
+                            </span>
+                        </td>
+                        <td class="px-4 py-3">
+                            <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold {{ bc.bg }} {{ bc.text }}">
+                                {{ BUCKET_LABELS.get(st.decision_bucket, st.decision_bucket or '--') }}
+                            </span>
+                        </td>
+                        <td class="px-4 py-3">
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium {{ rc.bg }} {{ rc.text }}">
+                                <span class="w-1.5 h-1.5 rounded-full {{ rc.dot }}"></span>
+                                {{ st.quality_risk or '--' }}
+                            </span>
+                        </td>
+                        <td class="px-4 py-3 text-gray-700 tabular-nums">{{ st.pe | fmt }}</td>
+                        <td class="px-4 py-3 tabular-nums
+                            {% if st.roe_latest is not none and st.roe_latest > 10 %}text-green-600 font-semibold
+                            {% elif st.roe_latest is not none and st.roe_latest < 0 %}text-red-600 font-semibold
+                            {% else %}text-gray-700{% endif %}">
+                            {{ st.roe_latest | pct }}
+                        </td>
+                        <td class="px-4 py-3 tabular-nums
+                            {% if st.roce_latest is not none and st.roce_latest > 10 %}text-green-600 font-semibold
+                            {% elif st.roce_latest is not none and st.roce_latest < 0 %}text-red-600 font-semibold
+                            {% else %}text-gray-700{% endif %}">
+                            {{ st.roce_latest | pct }}
+                        </td>
+                        <td class="px-4 py-3 text-gray-700 tabular-nums">{{ st.market_cap | fmt }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

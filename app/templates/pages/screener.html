@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+
+{% block title %}Stock Screener - {{ APP_TITLE }}{% endblock %}
+
+{% block content %}
+<div x-data="{ showFilters: false }">
+
+    {# ── Page header ───────────────────────────────────────────────────────── #}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-5">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Stock Screener</h1>
+            <p class="text-sm text-gray-500 mt-0.5">{{ results | length }} stocks found</p>
+        </div>
+        <button @click="showFilters = !showFilters"
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 shadow-sm transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
+            </svg>
+            <span x-text="showFilters ? 'Hide Filters' : 'Show Filters'">Show Filters</span>
+        </button>
+    </div>
+
+    {# ── Preset buttons ────────────────────────────────────────────────────── #}
+    <div class="flex flex-wrap gap-2 mb-5">
+        <a href="/screener"
+           class="px-3 py-1.5 text-xs font-semibold rounded-full border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 transition shadow-sm{% if not filters %} ring-2 ring-emerald-500 ring-offset-1{% endif %}">
+            All Stocks
+        </a>
+        <a href="/screener?bucket=GATES_CLEARED"
+           class="px-3 py-1.5 text-xs font-semibold rounded-full bg-emerald-500 text-white hover:bg-emerald-600 transition shadow-sm{% if filters.get('bucket') == ['GATES_CLEARED'] or filters.get('bucket') == 'GATES_CLEARED' %} ring-2 ring-emerald-700 ring-offset-1{% endif %}">
+            Gates Cleared
+        </a>
+        <a href="/screener?bucket=SCREEN_PASSED_VERIFY"
+           class="px-3 py-1.5 text-xs font-semibold rounded-full bg-lime-500 text-gray-900 hover:bg-lime-600 transition shadow-sm{% if filters.get('bucket') == ['SCREEN_PASSED_VERIFY'] or filters.get('bucket') == 'SCREEN_PASSED_VERIFY' %} ring-2 ring-lime-700 ring-offset-1{% endif %}">
+            Passed - Verify
+        </a>
+        <a href="/screener?risk=LOW"
+           class="px-3 py-1.5 text-xs font-semibold rounded-full bg-green-100 text-green-800 hover:bg-green-200 transition shadow-sm{% if filters.get('risk') == ['LOW'] or filters.get('risk') == 'LOW' %} ring-2 ring-green-600 ring-offset-1{% endif %}">
+            Low Risk Quality
+        </a>
+        <a href="/screener?bucket=CONTRARIAN_BET"
+           class="px-3 py-1.5 text-xs font-semibold rounded-full bg-indigo-500 text-white hover:bg-indigo-600 transition shadow-sm{% if filters.get('bucket') == ['CONTRARIAN_BET'] or filters.get('bucket') == 'CONTRARIAN_BET' %} ring-2 ring-indigo-700 ring-offset-1{% endif %}">
+            Contrarian Bets
+        </a>
+        <a href="/screener?no_red_flags=1"
+           class="px-3 py-1.5 text-xs font-semibold rounded-full bg-green-500 text-white hover:bg-green-600 transition shadow-sm{% if filters.get('no_red_flags') %} ring-2 ring-green-700 ring-offset-1{% endif %}">
+            Zero Red Flags
+        </a>
+    </div>
+
+    {# ── Filter panel (collapsible) ────────────────────────────────────────── #}
+    <div x-show="showFilters" x-collapse x-cloak
+         class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-6">
+        <form method="get" action="/screener">
+
+            {# Row 1 -- Select dropdowns #}
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
+
+                {# Decision Bucket #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Decision Bucket</label>
+                    <select name="bucket" class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="">All Buckets</option>
+                        {% for b in options.buckets %}
+                        <option value="{{ b }}"{% if b in (filters.get('bucket') or []) %} selected{% endif %}>
+                            {{ BUCKET_LABELS.get(b, b) }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Score Band #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Score Band</label>
+                    <select name="band" class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="">All Bands</option>
+                        {% for b in options.bands %}
+                        <option value="{{ b }}"{% if b in (filters.get('band') or []) %} selected{% endif %}>
+                            Band {{ b }}{% if BAND_COLORS.get(b) %} - {{ BAND_COLORS[b].label }}{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Quality Risk #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Quality Risk</label>
+                    <select name="risk" class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="">All Risks</option>
+                        {% for r in options.risks %}
+                        <option value="{{ r }}"{% if r in (filters.get('risk') or []) %} selected{% endif %}>
+                            {{ r | capitalize }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Valuation Band #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Valuation Band</label>
+                    <select name="valuation" class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="">All Valuations</option>
+                        {% for v in options.valuation_bands %}
+                        <option value="{{ v }}"{% if v in (filters.get('valuation') or []) %} selected{% endif %}>
+                            {{ v | replace('_', ' ') }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Sector #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Sector</label>
+                    <select name="sector" class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="">All Sectors</option>
+                        {% for s in options.sectors %}
+                        <option value="{{ s }}"{% if s in (filters.get('sector') or []) %} selected{% endif %}>
+                            {{ s }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Industry #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Industry</label>
+                    <select name="industry" class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                        <option value="">All Industries</option>
+                        {% for i in options.industries %}
+                        <option value="{{ i }}"{% if i in (filters.get('industry') or []) %} selected{% endif %}>
+                            {{ i }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            {# Row 2 -- Numeric inputs #}
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Min Score</label>
+                    <input type="number" name="min_score" step="0.1" placeholder="0"
+                           value="{{ filters.get('min_score', '') }}"
+                           class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Min MCap (Cr)</label>
+                    <input type="number" name="min_mcap" step="100" placeholder="0"
+                           value="{{ filters.get('min_mcap', '') }}"
+                           class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Max PE</label>
+                    <input type="number" name="max_pe" step="1" placeholder="any"
+                           value="{{ filters.get('max_pe', '') }}"
+                           class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Min ROE %</label>
+                    <input type="number" name="min_roe" step="0.5" placeholder="0"
+                           value="{{ filters.get('min_roe', '') }}"
+                           class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Min ROCE %</label>
+                    <input type="number" name="min_roce" step="0.5" placeholder="0"
+                           value="{{ filters.get('min_roce', '') }}"
+                           class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Max D/E</label>
+                    <input type="number" name="max_de" step="0.1" placeholder="any"
+                           value="{{ filters.get('max_de', '') }}"
+                           class="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none">
+                </div>
+            </div>
+
+            {# Row 3 -- Checkbox toggles #}
+            <div class="flex flex-wrap items-center gap-x-6 gap-y-2 mb-4">
+                <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input type="checkbox" name="screen_eligible" value="1"
+                           {% if filters.get('screen_eligible') %}checked{% endif %}
+                           class="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500">
+                    Screen Eligible Only
+                </label>
+                <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input type="checkbox" name="no_red_flags" value="1"
+                           {% if filters.get('no_red_flags') %}checked{% endif %}
+                           class="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500">
+                    No Red Flags
+                </label>
+                <label class="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input type="checkbox" name="dividend_paying" value="1"
+                           {% if filters.get('dividend_paying') %}checked{% endif %}
+                           class="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500">
+                    Dividend Paying
+                </label>
+            </div>
+
+            {# Action buttons #}
+            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
+                <button type="submit"
+                        class="px-4 py-2 text-sm font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition">
+                    Apply Filters
+                </button>
+                <a href="/screener"
+                   class="px-4 py-2 text-sm font-medium rounded-lg text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition">
+                    Clear All
+                </a>
+            </div>
+        </form>
+    </div>
+
+    {# ── Results table ─────────────────────────────────────────────────────── #}
+    {% macro sort_link(col, label, default_dir='DESC') %}
+        {%- set current_sort = filters.get('sort', 'score') -%}
+        {%- set current_dir = filters.get('dir', 'DESC') -%}
+        {%- if current_sort == col -%}
+            {%- set next_dir = 'ASC' if current_dir == 'DESC' else 'DESC' -%}
+        {%- else -%}
+            {%- set next_dir = default_dir -%}
+        {%- endif -%}
+        {# Build query string preserving existing filters #}
+        {%- set ns = namespace(qs_parts=[]) -%}
+        {%- for key, val in filters.items() -%}
+            {%- if key not in ('sort', 'dir') -%}
+                {%- if val is iterable and val is not string -%}
+                    {%- for v in val -%}
+                        {%- set ns.qs_parts = ns.qs_parts + [key ~ '=' ~ v] -%}
+                    {%- endfor -%}
+                {%- elif val is sameas true -%}
+                    {%- set ns.qs_parts = ns.qs_parts + [key ~ '=1'] -%}
+                {%- else -%}
+                    {%- set ns.qs_parts = ns.qs_parts + [key ~ '=' ~ val] -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {%- set ns.qs_parts = ns.qs_parts + ['sort=' ~ col, 'dir=' ~ next_dir] -%}
+        <a href="/screener?{{ ns.qs_parts | join('&') }}"
+           class="inline-flex items-center gap-0.5 hover:text-emerald-600 transition whitespace-nowrap">
+            {{ label }}
+            {%- if current_sort == col -%}
+                {%- if current_dir == 'ASC' -%}
+                    <svg class="w-3 h-3 text-emerald-600" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/></svg>
+                {%- else -%}
+                    <svg class="w-3 h-3 text-emerald-600" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                {%- endif -%}
+            {%- endif -%}
+        </a>
+    {% endmacro %}
+
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+            {% if results %}
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-gray-50 border-b border-gray-200 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                        <th class="px-3 py-2.5 sticky left-0 bg-gray-50 z-10">{{ sort_link('name', 'NSE Code', 'ASC') }}</th>
+                        <th class="px-3 py-2.5">Stock Name</th>
+                        <th class="px-3 py-2.5">Sector</th>
+                        <th class="px-3 py-2.5 text-center">{{ sort_link('score', 'Score') }}</th>
+                        <th class="px-3 py-2.5 text-center">Decision</th>
+                        <th class="px-3 py-2.5 text-center">Valuation</th>
+                        <th class="px-3 py-2.5 text-center">Risk</th>
+                        <th class="px-3 py-2.5 text-right">{{ sort_link('pe', 'PE') }}</th>
+                        <th class="px-3 py-2.5 text-right">{{ sort_link('roe', 'ROE%') }}</th>
+                        <th class="px-3 py-2.5 text-right">{{ sort_link('roce', 'ROCE%') }}</th>
+                        <th class="px-3 py-2.5 text-right">{{ sort_link('de', 'D/E') }}</th>
+                        <th class="px-3 py-2.5 text-right">{{ sort_link('mcap', 'MCap (Cr)') }}</th>
+                        <th class="px-3 py-2.5 text-center">Red Flags</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for row in results %}
+                    <tr class="hover:bg-emerald-50/40 transition-colors {{ 'bg-gray-50/50' if loop.index is odd else 'bg-white' }}">
+
+                        {# NSE Code -- sticky on mobile #}
+                        <td class="px-3 py-2 sticky left-0 z-10 {{ 'bg-gray-50/50' if loop.index is odd else 'bg-white' }}">
+                            <a href="/stock/{{ row.nse_code }}"
+                               class="font-bold text-emerald-700 hover:text-emerald-900 hover:underline whitespace-nowrap">
+                                {{ row.nse_code }}
+                            </a>
+                        </td>
+
+                        {# Stock Name -- truncate long names #}
+                        <td class="px-3 py-2 max-w-[180px] truncate text-gray-700" title="{{ row.stock_name }}">
+                            {{ row.stock_name or '--' }}
+                        </td>
+
+                        {# Sector #}
+                        <td class="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">
+                            {{ row.sector or '--' }}
+                        </td>
+
+                        {# Score (colored badge by band) #}
+                        <td class="px-3 py-2 text-center">
+                            {% if row.composite_score is not none and row.score_band %}
+                                {% set bc = BAND_COLORS.get(row.score_band, {'bg': 'bg-gray-200', 'text': 'text-gray-700'}) %}
+                                <span class="inline-block px-2 py-0.5 text-xs font-bold rounded-full {{ bc.bg }} {{ bc.text }}">
+                                    {{ row.composite_score | fmt(1) }} / {{ row.score_band }}
+                                </span>
+                            {% else %}
+                                <span class="text-gray-400 text-xs">--</span>
+                            {% endif %}
+                        </td>
+
+                        {# Decision Bucket (colored) #}
+                        <td class="px-3 py-2 text-center">
+                            {% if row.decision_bucket %}
+                                {% set dc = BUCKET_COLORS.get(row.decision_bucket, {'bg': 'bg-gray-200', 'text': 'text-gray-700'}) %}
+                                <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded-full {{ dc.bg }} {{ dc.text }} whitespace-nowrap">
+                                    {{ BUCKET_LABELS.get(row.decision_bucket, row.decision_bucket) }}
+                                </span>
+                            {% else %}
+                                <span class="text-gray-400 text-xs">--</span>
+                            {% endif %}
+                        </td>
+
+                        {# Valuation Band (colored badge) #}
+                        <td class="px-3 py-2 text-center">
+                            {% if row.valuation_band %}
+                                {% set vc = VALUATION_COLORS.get(row.valuation_band, {'bg': 'bg-gray-100', 'text': 'text-gray-600'}) %}
+                                <span class="inline-block px-2 py-0.5 text-xs font-medium rounded-full {{ vc.bg }} {{ vc.text }} whitespace-nowrap">
+                                    {{ row.valuation_band | replace('_', ' ') }}
+                                </span>
+                            {% else %}
+                                <span class="text-gray-400 text-xs">--</span>
+                            {% endif %}
+                        </td>
+
+                        {# Quality Risk (colored badge) #}
+                        <td class="px-3 py-2 text-center">
+                            {% if row.quality_risk %}
+                                {% set rc = RISK_COLORS.get(row.quality_risk, {'bg': 'bg-gray-100', 'text': 'text-gray-600'}) %}
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full {{ rc.bg }} {{ rc.text }}">
+                                    <span class="w-1.5 h-1.5 rounded-full {{ rc.dot }}"></span>
+                                    {{ row.quality_risk | capitalize }}
+                                </span>
+                            {% else %}
+                                <span class="text-gray-400 text-xs">--</span>
+                            {% endif %}
+                        </td>
+
+                        {# PE #}
+                        <td class="px-3 py-2 text-right text-gray-700 tabular-nums">
+                            {{ row.pe | fmt(1) }}
+                        </td>
+
+                        {# ROE% #}
+                        <td class="px-3 py-2 text-right tabular-nums {{ row.roe_latest | sign_class }}">
+                            {{ row.roe_latest | pct(1) }}
+                        </td>
+
+                        {# ROCE% #}
+                        <td class="px-3 py-2 text-right tabular-nums {{ row.roce_latest | sign_class }}">
+                            {{ row.roce_latest | pct(1) }}
+                        </td>
+
+                        {# Debt/Equity #}
+                        <td class="px-3 py-2 text-right text-gray-700 tabular-nums">
+                            {{ row.debt_equity | fmt(2) }}
+                        </td>
+
+                        {# Market Cap #}
+                        <td class="px-3 py-2 text-right text-gray-700 tabular-nums whitespace-nowrap">
+                            {{ row.market_cap | fmt(0) }}
+                        </td>
+
+                        {# Red Flags (colored count) #}
+                        <td class="px-3 py-2 text-center">
+                            {% if row.red_flag_count is not none %}
+                                {% if row.red_flag_count == 0 %}
+                                    <span class="inline-block min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full bg-green-100 text-green-700">0</span>
+                                {% elif row.red_flag_count <= 2 %}
+                                    <span class="inline-block min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full bg-amber-100 text-amber-700">{{ row.red_flag_count }}</span>
+                                {% else %}
+                                    <span class="inline-block min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700">{{ row.red_flag_count }}</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-gray-400 text-xs">--</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="flex flex-col items-center justify-center py-16 px-4">
+                <svg class="w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+                </svg>
+                <p class="text-gray-500 font-medium">No stocks match your filters</p>
+                <p class="text-sm text-gray-400 mt-1">Try broadening your search criteria or
+                    <a href="/screener" class="text-emerald-600 hover:underline">clear all filters</a>.
+                </p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ── Bottom result count ───────────────────────────────────────────────── #}
+    {% if results %}
+    <div class="mt-4 text-sm text-gray-500 text-center">
+        Showing {{ results | length }} stock{{ 's' if results | length != 1 else '' }}
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

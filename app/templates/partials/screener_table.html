@@ -1,0 +1,73 @@
+<!-- Screener results table (HTMX partial) -->
+<div class="table-wrapper">
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>NSE Code</th>
+            <th>Stock Name</th>
+            <th>Sector</th>
+            <th>Score</th>
+            <th>Decision</th>
+            <th>Valuation</th>
+            <th>Risk</th>
+            <th class="text-right">PE</th>
+            <th class="text-right">ROE%</th>
+            <th class="text-right">ROCE%</th>
+            <th class="text-right">D/E</th>
+            <th class="text-right">MCap (Cr)</th>
+            <th class="text-right">Flags</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in results %}
+        <tr>
+            <td><a href="/stock/{{ r.nse_code }}" class="font-semibold text-emerald-600 hover:text-emerald-800">{{ r.nse_code }}</a></td>
+            <td class="max-w-[180px] truncate" title="{{ r.stock_name }}">{{ r.stock_name or '--' }}</td>
+            <td class="text-gray-500 text-xs">{{ r.sector or '--' }}</td>
+            <td>
+                {% if r.composite_score is not none %}
+                {% set band = r.score_band or 'F' %}
+                {% set bc = BAND_COLORS.get(band, BAND_COLORS['F']) %}
+                <span class="badge {{ bc.bg }} {{ bc.text }}">{{ r.composite_score }}/{{ band }}</span>
+                {% else %}--{% endif %}
+            </td>
+            <td>
+                {% if r.decision_bucket %}
+                {% set dc = BUCKET_COLORS.get(r.decision_bucket, {"bg": "bg-gray-200", "text": "text-gray-700"}) %}
+                <span class="badge {{ dc.bg }} {{ dc.text }} text-[10px]">{{ BUCKET_LABELS.get(r.decision_bucket, r.decision_bucket) }}</span>
+                {% else %}--{% endif %}
+            </td>
+            <td>
+                {% if r.valuation_band %}
+                {% set vc = VALUATION_COLORS.get(r.valuation_band, {"bg": "bg-gray-100", "text": "text-gray-600"}) %}
+                <span class="badge {{ vc.bg }} {{ vc.text }}">{{ r.valuation_band }}</span>
+                {% else %}--{% endif %}
+            </td>
+            <td>
+                {% if r.quality_risk %}
+                {% set rc = RISK_COLORS.get(r.quality_risk, {"bg": "bg-gray-100", "text": "text-gray-600"}) %}
+                <span class="badge {{ rc.bg }} {{ rc.text }}">{{ r.quality_risk }}</span>
+                {% else %}--{% endif %}
+            </td>
+            <td class="text-right">{{ r.pe|fmt if r.pe is not none else '--' }}</td>
+            <td class="text-right {{ r.roe_latest|sign_class }}">{{ r.roe_latest|pct if r.roe_latest is not none else '--' }}</td>
+            <td class="text-right {{ r.roce_latest|sign_class }}">{{ r.roce_latest|pct if r.roce_latest is not none else '--' }}</td>
+            <td class="text-right">{{ r.debt_equity|fmt if r.debt_equity is not none else '--' }}</td>
+            <td class="text-right">{{ '{:,.0f}'.format(r.market_cap) if r.market_cap is not none else '--' }}</td>
+            <td class="text-right">
+                {% if r.red_flag_count is not none %}
+                <span class="badge {% if r.red_flag_count == 0 %}bg-green-100 text-green-800{% elif r.red_flag_count <= 2 %}bg-amber-100 text-amber-800{% else %}bg-red-100 text-red-800{% endif %}">{{ r.red_flag_count }}</span>
+                {% else %}--{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% if not results %}
+<div class="text-center py-12 text-gray-400">
+    <p class="text-lg">No stocks match your filters</p>
+    <a href="/screener" class="text-emerald-600 hover:underline mt-2 inline-block">Clear all filters</a>
+</div>
+{% endif %}
+<div class="mt-3 text-sm text-gray-500">Showing {{ results|length }} stock{{ 's' if results|length != 1 else '' }}</div>

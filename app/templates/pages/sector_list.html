@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Sectors - {{ APP_TITLE }}{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-gray-900">Sectors</h1>
+    <p class="mt-1 text-sm text-gray-500">29 sectors across Indian markets</p>
+</div>
+
+<!-- Sector Table -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm" x-data="{ sortCol: '', sortAsc: true }" x-init="
+            sortCol = 'num_companies';
+            sortAsc = false;
+        ">
+            <thead>
+                <tr class="bg-gray-50 border-b border-gray-200">
+                    {% set columns = [
+                        ('sector', 'Sector', false),
+                        ('num_companies', '# Companies', false),
+                        ('avg_market_cap', 'Avg MCap', false),
+                        ('avg_pe', 'Avg PE', false),
+                        ('avg_pbv', 'Avg PBV', false),
+                        ('avg_roe', 'Avg ROE', false),
+                        ('avg_roce', 'Avg ROCE', false),
+                        ('avg_roa', 'Avg ROA', false),
+                    ] %}
+                    {% for col_key, col_label, _ in columns %}
+                    <th class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap cursor-pointer hover:text-emerald-600 select-none"
+                        @click="if (sortCol === '{{ col_key }}') { sortAsc = !sortAsc } else { sortCol = '{{ col_key }}'; sortAsc = true }">
+                        <div class="flex items-center gap-1">
+                            {{ col_label }}
+                            <span class="text-xs text-gray-400"
+                                  x-show="sortCol === '{{ col_key }}'"
+                                  x-text="sortAsc ? '&#9650;' : '&#9660;'"></span>
+                        </div>
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for s in sectors %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-4 py-3 font-medium">
+                        <a href="/sector/{{ s.sector }}" class="text-emerald-600 hover:text-emerald-700 hover:underline">
+                            {{ s.sector }}
+                        </a>
+                    </td>
+                    <td class="px-4 py-3 text-gray-700 tabular-nums">{{ s.num_companies }}</td>
+                    <td class="px-4 py-3 text-gray-700 tabular-nums">{{ s.avg_market_cap | fmt }}</td>
+                    <td class="px-4 py-3 text-gray-700 tabular-nums">{{ s.avg_pe | fmt }}</td>
+                    <td class="px-4 py-3 text-gray-700 tabular-nums">{{ s.avg_pbv | fmt }}</td>
+                    <td class="px-4 py-3 tabular-nums
+                        {% if s.avg_roe is not none and s.avg_roe > 10 %}text-green-600 font-semibold
+                        {% elif s.avg_roe is not none and s.avg_roe < 0 %}text-red-600 font-semibold
+                        {% else %}text-gray-700{% endif %}">
+                        {{ s.avg_roe | pct }}
+                    </td>
+                    <td class="px-4 py-3 tabular-nums
+                        {% if s.avg_roce is not none and s.avg_roce > 10 %}text-green-600 font-semibold
+                        {% elif s.avg_roce is not none and s.avg_roce < 0 %}text-red-600 font-semibold
+                        {% else %}text-gray-700{% endif %}">
+                        {{ s.avg_roce | pct }}
+                    </td>
+                    <td class="px-4 py-3 text-gray-700 tabular-nums">{{ s.avg_roa | pct }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
