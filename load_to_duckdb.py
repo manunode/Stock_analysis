@@ -559,6 +559,64 @@ def create_database(data):
     ).fetchone()[0]
     print(f"  {'industry_summary':20s} → {count:>5,} rows, {cols:>3} columns  (computed)")
 
+    # Create view: per-stock comparison against sector & industry averages
+    con.execute("""
+        CREATE OR REPLACE VIEW stock_vs_benchmarks AS
+        SELECT
+            s.nse_code,
+            s.stock_name,
+            s.sector,
+            s.industry,
+            s.market_cap,
+
+            -- Stock metrics
+            v.pe                        AS pe,
+            v.peg                       AS peg,
+            v.pbv                       AS pbv,
+            q.roe_latest                AS roe,
+            q.roce_latest               AS roce,
+            q.roa_latest                AS roa,
+
+            -- Sector averages
+            sec.avg_pe                  AS sector_avg_pe,
+            sec.avg_peg                 AS sector_avg_peg,
+            sec.avg_pbv                 AS sector_avg_pbv,
+            sec.avg_roe                 AS sector_avg_roe,
+            sec.avg_roce               AS sector_avg_roce,
+            sec.avg_roa                 AS sector_avg_roa,
+
+            -- Industry averages
+            ind.avg_pe                  AS industry_avg_pe,
+            ind.avg_peg                 AS industry_avg_peg,
+            ind.avg_pbv                 AS industry_avg_pbv,
+            ind.avg_roe                 AS industry_avg_roe,
+            ind.avg_roce               AS industry_avg_roce,
+            ind.avg_roa                 AS industry_avg_roa,
+
+            -- Difference vs sector (positive = stock is higher than sector avg)
+            ROUND(v.pe  - sec.avg_pe, 2)           AS pe_vs_sector,
+            ROUND(v.peg - sec.avg_peg, 2)          AS peg_vs_sector,
+            ROUND(v.pbv - sec.avg_pbv, 2)          AS pbv_vs_sector,
+            ROUND(q.roe_latest  - sec.avg_roe, 2)  AS roe_vs_sector,
+            ROUND(q.roce_latest - sec.avg_roce, 2) AS roce_vs_sector,
+            ROUND(q.roa_latest  - sec.avg_roa, 2)  AS roa_vs_sector,
+
+            -- Difference vs industry (positive = stock is higher than industry avg)
+            ROUND(v.pe  - ind.avg_pe, 2)           AS pe_vs_industry,
+            ROUND(v.peg - ind.avg_peg, 2)          AS peg_vs_industry,
+            ROUND(v.pbv - ind.avg_pbv, 2)          AS pbv_vs_industry,
+            ROUND(q.roe_latest  - ind.avg_roe, 2)  AS roe_vs_industry,
+            ROUND(q.roce_latest - ind.avg_roce, 2) AS roce_vs_industry,
+            ROUND(q.roa_latest  - ind.avg_roa, 2)  AS roa_vs_industry
+
+        FROM stocks s
+        JOIN valuation v        ON s.nse_code = v.nse_code
+        JOIN quality q          ON s.nse_code = q.nse_code
+        JOIN sector_summary sec ON s.sector   = sec.sector
+        JOIN industry_summary ind ON s.industry = ind.industry
+    """)
+    print(f"  {'stock_vs_benchmarks':20s} → view created (per-stock vs sector & industry averages)")
+
     return con
 
 
@@ -647,6 +705,27 @@ def verify_database(con):
             f"{r[2]:,.0f}" if r[2] else "N/A",
             f(r[3]), f(r[4]), f(r[5]), f(r[6]), f(r[7]), f(r[8])
         ))
+
+    # Stock vs benchmarks view sample
+    print("\n  Stock vs Benchmarks (5 screen-eligible stocks — PE & ROE comparison):")
+    rows = con.execute("""
+        SELECT b.nse_code, b.stock_name,
+               b.pe, b.sector_avg_pe, b.industry_avg_pe,
+               b.roe, b.sector_avg_roe, b.industry_avg_roe
+        FROM stock_vs_benchmarks b
+        JOIN analysis a ON b.nse_code = a.nse_code
+        WHERE a.screen_eligible = true
+        ORDER BY a.composite_score DESC
+        LIMIT 5
+    """).fetchall()
+    hdr = "    {:<12s} {:<20s} {:>7} {:>9} {:>9} {:>7} {:>9} {:>9}"
+    print(hdr.format("NSE Code", "Name", "PE", "Sec Avg", "Ind Avg", "ROE", "Sec Avg", "Ind Avg"))
+    print(hdr.format("─"*12, "─"*20, "─"*7, "─"*9, "─"*9, "─"*7, "─"*9, "─"*9))
+    for r in rows:
+        def f(v): return f"{v:.1f}" if v is not None else "N/A"
+        print(hdr.format(str(r[0])[:12], str(r[1])[:20],
+                         f(r[2]), f(r[3]), f(r[4]),
+                         f(r[5]), f(r[6]), f(r[7])))
 
     # Red flag summary
     print("\n  Red flag distribution:")
