@@ -87,7 +87,7 @@ templates.env.filters["trend_arrow"] = _trend_arrow
 
 
 # ── Register routes ──────────────────────────────────────────────────────────
-from app.routes import home, stock, screener, sector, industry, compare, api  # noqa: E402
+from app.routes import home, stock, screener, sector, industry, compare, api, methodology  # noqa: E402
 
 app.include_router(home.router)
 app.include_router(stock.router)
@@ -96,3 +96,4 @@ app.include_router(sector.router)
 app.include_router(industry.router)
 app.include_router(compare.router)
 app.include_router(api.router)
+app.include_router(methodology.router)

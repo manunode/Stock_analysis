@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+{% block title %}Methodology - {{ APP_TITLE }}{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+
+    <h1 class="text-2xl font-bold text-gray-900 mb-2">Screening Methodology</h1>
+    <p class="text-sm text-gray-500 mb-8">How stocks are scored, flagged, and assigned to decision buckets.</p>
+
+    {# ── Table of Contents ─────────────────────────────────────────────────── #}
+    <nav class="bg-gray-50 rounded-xl border border-gray-200 p-5 mb-10">
+        <h2 class="text-xs font-semibold uppercase text-gray-400 tracking-wide mb-3">On this page</h2>
+        <ul class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-sm">
+            <li><a href="#decision-buckets" class="text-emerald-600 hover:text-emerald-800 hover:underline">1. Decision Buckets</a></li>
+            <li><a href="#decision-flow" class="text-emerald-600 hover:text-emerald-800 hover:underline">2. Decision Flow</a></li>
+            <li><a href="#score-bands" class="text-emerald-600 hover:text-emerald-800 hover:underline">3. Score Bands</a></li>
+            <li><a href="#severity-system" class="text-emerald-600 hover:text-emerald-800 hover:underline">4. Flag Severity System</a></li>
+            <li><a href="#red-flags" class="text-emerald-600 hover:text-emerald-800 hover:underline">5. Red Flag Catalogue</a></li>
+            <li><a href="#conviction-overrides" class="text-emerald-600 hover:text-emerald-800 hover:underline">6. Conviction Overrides</a></li>
+            <li><a href="#screen-eligible" class="text-emerald-600 hover:text-emerald-800 hover:underline">7. Screen Eligibility</a></li>
+        </ul>
+    </nav>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 1: Decision Buckets                                            #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="decision-buckets" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">1. Decision Buckets</h2>
+        <p class="text-sm text-gray-600 mb-6">
+            Every stock is assigned to exactly one bucket. Buckets use <strong>neutral language</strong> -- they describe
+            screening outcomes, not investment recommendations.
+        </p>
+
+        <div class="space-y-4">
+            {% set bucket_details = [
+                ("GATES_CLEARED", "Passed all quality, valuation, and red-flag gates.",
+                 "Score Band A or B, no quality flags (severity 0), no pricing flags, non-aggressive earnings, consolidated data. These are the highest-conviction screening outcomes.",
+                 "emerald"),
+                ("SCREEN_PASSED_VERIFY", "Passed screening but needs manual verification.",
+                 "Would have been GATES_CLEARED or PASSED_EXPENSIVE, but only standalone (non-consolidated) financial data is available. Group-level financials must be verified before acting.",
+                 "blue"),
+                ("SCREEN_PASSED_FLAGS", "Passed screening but has quality or pricing red flags.",
+                 "Quality severity between 0.5 and 1.9 (one MAJOR or up to three MINOR flags), OR aggressive earnings quality. The business has merit but specific concerns need investigation.",
+                 "amber"),
+                ("SCREEN_PASSED_EXPENSIVE", "Good fundamentals but current valuation appears stretched.",
+                 "Score Band A or B with zero quality severity, but at least one pricing flag is raised (High PE, High EV/EBITDA, or High PBV/ROE). The business quality is there; the price may not be.",
+                 "orange"),
+                ("SCREEN_MARGINAL", "Near the screening threshold.",
+                 "Score Band C (composite score 50-64). The stock is borderline -- not clearly good or bad. It may improve or deteriorate with new quarterly data.",
+                 "gray"),
+                ("CONTRARIAN_BET", "Failed standard screens but promoters are buying.",
+                 "Was SCREEN_FAILED or SCREEN_MARGINAL, but promoter holding increased by more than 3% in the last year, quality severity is below 4.0, and data confidence is at least 50%. Insiders disagree with the market -- this warrants special attention. Strengthened if insider trading data confirms open-market purchases.",
+                 "indigo"),
+                ("VALUE_TRAP", "Looks cheap on metrics but insiders are exiting.",
+                 "Was GATES_CLEARED or PASSED_EXPENSIVE, but promoter holding dropped by more than 3% in the last year. Cross-referenced against insider trading data: only confirmed as VALUE_TRAP if the selling is genuine open-market disposal (not inter-se family transfers, not minor liquidity events). If mitigated, the original bucket is restored.",
+                 "red"),
+                ("DATA_INCOMPLETE", "Insufficient data to form a reliable assessment.",
+                 "Data confidence score is below 60%. This is NOT necessarily a bad business -- it simply means the available financial data is too sparse to run a reliable screen. Verify manually.",
+                 "slate"),
+                ("SCREEN_FAILED", "Did not meet minimum quality or financial thresholds.",
+                 "Quality severity >= 2.0 (one CRITICAL flag or two MAJOR flags), OR cyclic peak risk HIGH with any pricing flag, OR Score Band D/F. The screening model does not support this stock at this time.",
+                 "red"),
+            ] %}
+
+            {% for bucket_key, summary, detail, color in bucket_details %}
+            {% set bc = BUCKET_COLORS.get(bucket_key, {"bg": "bg-gray-400", "text": "text-white", "border": "border-gray-500"}) %}
+            <div class="rounded-xl border border-gray-200 overflow-hidden">
+                <div class="flex items-center gap-3 px-5 py-3 {{ bc.bg }} {{ bc.text }}">
+                    <span class="text-sm font-bold">{{ BUCKET_LABELS.get(bucket_key, bucket_key) }}</span>
+                    <span class="text-xs opacity-80 font-mono">{{ bucket_key }}</span>
+                </div>
+                <div class="px-5 py-4 bg-white">
+                    <p class="text-sm font-semibold text-gray-800 mb-1">{{ summary }}</p>
+                    <p class="text-sm text-gray-600 leading-relaxed">{{ detail }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 2: Decision Flow                                               #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="decision-flow" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">2. Decision Flow</h2>
+        <p class="text-sm text-gray-600 mb-4">
+            Buckets are assigned in strict priority order. The first matching rule wins.
+        </p>
+
+        <div class="bg-white rounded-xl border border-gray-200 p-5">
+            <ol class="space-y-3 text-sm">
+                {% set flow_steps = [
+                    ("Quality Severity >= 2.0?", "SCREEN_FAILED", "One CRITICAL flag (weight 2.0) or two MAJOR flags (weight 1.0 each)"),
+                    ("Data Confidence < 40?", "DATA_INCOMPLETE", "Critical data gap -- cannot analyze"),
+                    ("Data Confidence < 60?", "DATA_INCOMPLETE", "Low confidence -- unreliable screen"),
+                    ("Cyclic Peak Risk HIGH + any pricing flag?", "SCREEN_FAILED", "At peak earnings AND priced for perfection = maximum downside"),
+                    ("Quality Severity >= 1.0?", "SCREEN_PASSED_FLAGS", "One MAJOR flag or two MINOR flags -- investigate"),
+                    ("Quality Severity >= 0.5?", "SCREEN_PASSED_FLAGS", "One MINOR flag only"),
+                    ("Any pricing flag + Band A/B?", "SCREEN_PASSED_EXPENSIVE", "Good business, stretched valuation"),
+                    ("Aggressive earnings quality?", "SCREEN_PASSED_FLAGS", "Accounting quality concern"),
+                    ("Band A or B + non-aggressive?", "GATES_CLEARED", "Passed all gates"),
+                    ("Band C?", "SCREEN_MARGINAL", "Borderline score"),
+                    ("Everything else", "SCREEN_FAILED", "Low score (Band D or F)"),
+                ] %}
+
+                {% for condition, bucket, note in flow_steps %}
+                {% set bc = BUCKET_COLORS.get(bucket, {"bg": "bg-gray-200", "text": "text-gray-700"}) %}
+                <li class="flex items-start gap-3">
+                    <span class="flex-shrink-0 w-6 h-6 rounded-full bg-gray-100 text-gray-600 flex items-center justify-center text-xs font-bold mt-0.5">{{ loop.index }}</span>
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="font-medium text-gray-800">{{ condition }}</span>
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded {{ bc.bg }} {{ bc.text }}">{{ BUCKET_LABELS.get(bucket, bucket) }}</span>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-0.5">{{ note }}</p>
+                    </div>
+                </li>
+                {% endfor %}
+            </ol>
+
+            <div class="mt-5 pt-4 border-t border-gray-100">
+                <p class="text-xs text-gray-500 mb-2"><strong>Post-processing adjustments:</strong></p>
+                <ul class="text-xs text-gray-500 space-y-1 ml-4 list-disc">
+                    <li><strong>Standalone data:</strong> If bucket is GATES_CLEARED or PASSED_EXPENSIVE but data is standalone (not consolidated), upgrade to SCREEN_PASSED_VERIFY.</li>
+                    <li><strong>Contrarian override:</strong> If SCREEN_FAILED/MARGINAL but promoter buying > 3%, reclassify to CONTRARIAN_BET (with conditions).</li>
+                    <li><strong>Value trap override:</strong> If GATES_CLEARED/PASSED_EXPENSIVE but promoter selling > 3%, reclassify to VALUE_TRAP (unless mitigated by insider trading context).</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 3: Score Bands                                                 #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="score-bands" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">3. Score Bands</h2>
+        <p class="text-sm text-gray-600 mb-4">
+            The composite score (0-100) is bucketed into bands. The difference between 88 and 92 is noise -- use bands for decisions, not raw scores.
+        </p>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b-2 border-gray-200">
+                        <th class="py-2.5 px-4 text-left font-semibold text-gray-600">Band</th>
+                        <th class="py-2.5 px-4 text-left font-semibold text-gray-600">Score Range</th>
+                        <th class="py-2.5 px-4 text-left font-semibold text-gray-600">Meaning</th>
+                        <th class="py-2.5 px-4 text-left font-semibold text-gray-600">Screening Impact</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set bands_info = [
+                        ("A", "80-100", "Strong candidate", "Eligible for GATES_CLEARED if no flags"),
+                        ("B", "65-79", "Decent, worth analysis", "Eligible for GATES_CLEARED if no flags"),
+                        ("C", "50-64", "Marginal", "SCREEN_MARGINAL -- borderline, may improve"),
+                        ("D", "30-49", "Weak", "SCREEN_FAILED -- below minimum threshold"),
+                        ("F", "0-29", "Avoid", "SCREEN_FAILED -- well below threshold"),
+                    ] %}
+                    {% for band, range, meaning, impact in bands_info %}
+                    {% set bc = BAND_COLORS.get(band, {"bg": "bg-gray-200", "text": "text-gray-700"}) %}
+                    <tr class="border-b border-gray-100 hover:bg-gray-50/50">
+                        <td class="py-2.5 px-4">
+                            <span class="inline-block w-8 text-center py-0.5 rounded text-xs font-bold {{ bc.bg }} {{ bc.text }}">{{ band }}</span>
+                        </td>
+                        <td class="py-2.5 px-4 font-mono text-gray-700">{{ range }}</td>
+                        <td class="py-2.5 px-4 text-gray-700">{{ meaning }}</td>
+                        <td class="py-2.5 px-4 text-gray-600">{{ impact }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 4: Flag Severity System                                        #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="severity-system" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">4. Flag Severity System</h2>
+        <p class="text-sm text-gray-600 mb-4">
+            Each red flag carries a severity weight. The total quality severity score determines whether a stock passes or fails.
+            This is more nuanced than simply counting flags -- a single critical flag is worse than three minor ones.
+        </p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+            <div class="rounded-xl border-2 border-red-300 bg-red-50 p-5">
+                <div class="text-xs uppercase font-bold text-red-600 tracking-wide mb-1">Critical</div>
+                <div class="text-3xl font-bold text-red-700 mb-2">2.0</div>
+                <p class="text-xs text-red-700">Survival risk. One critical flag alone triggers SCREEN_FAILED.</p>
+            </div>
+            <div class="rounded-xl border-2 border-amber-300 bg-amber-50 p-5">
+                <div class="text-xs uppercase font-bold text-amber-600 tracking-wide mb-1">Major</div>
+                <div class="text-3xl font-bold text-amber-700 mb-2">1.0</div>
+                <p class="text-xs text-amber-700">Structural concern. Two major flags trigger SCREEN_FAILED.</p>
+            </div>
+            <div class="rounded-xl border-2 border-gray-300 bg-gray-50 p-5">
+                <div class="text-xs uppercase font-bold text-gray-600 tracking-wide mb-1">Minor</div>
+                <div class="text-3xl font-bold text-gray-700 mb-2">0.5</div>
+                <p class="text-xs text-gray-600">May be cyclical or sector-normal. Check sector warnings.</p>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 p-5 text-sm">
+            <h3 class="font-semibold text-gray-800 mb-3">Severity Thresholds</h3>
+            <div class="space-y-2">
+                <div class="flex items-center gap-3">
+                    <span class="font-mono text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded w-16 text-center">>=2.0</span>
+                    <span class="text-gray-700"><strong>SCREEN_FAILED</strong> -- hard rule, no exceptions</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="font-mono text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded w-16 text-center">1.0-1.9</span>
+                    <span class="text-gray-700"><strong>SCREEN_PASSED_FLAGS</strong> -- investigate the concerns</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="font-mono text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded w-16 text-center">0.5-0.9</span>
+                    <span class="text-gray-700"><strong>SCREEN_PASSED_FLAGS</strong> -- minor concern, likely manageable</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="font-mono text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded w-16 text-center">0</span>
+                    <span class="text-gray-700">Clean slate -- eligible for GATES_CLEARED (if score is sufficient)</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 5: Red Flag Catalogue                                          #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="red-flags" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">5. Red Flag Catalogue</h2>
+
+        {# Quality Flags #}
+        <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Quality Flags</h3>
+        <div class="overflow-x-auto mb-8">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b-2 border-gray-200">
+                        <th class="py-2 px-3 text-left font-semibold text-gray-600">Flag</th>
+                        <th class="py-2 px-3 text-center font-semibold text-gray-600">Severity</th>
+                        <th class="py-2 px-3 text-left font-semibold text-gray-600">What it means</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set quality_detail = [
+                        ("flag_negative_cfo", "CRITICAL", "Cash flow from operations is negative -- the business is burning cash"),
+                        ("flag_poor_cash_conversion", "CRITICAL", "Profits are not converting to cash (CFO/PAT consistently low)"),
+                        ("flag_inconsistent_cfo", "CRITICAL", "Cash flow is erratic year-to-year -- unreliable earnings"),
+                        ("flag_rising_debt", "CRITICAL", "Debt levels are increasing materially -- leverage risk"),
+                        ("flag_low_roe", "MAJOR", "Return on equity is structurally low (below cost of capital)"),
+                        ("flag_declining_roe", "MAJOR", "ROE is trending down -- deteriorating capital efficiency"),
+                        ("flag_low_roce", "MAJOR", "Return on capital employed is structurally low"),
+                        ("flag_declining_roce", "MAJOR", "ROCE is trending down -- worsening business economics"),
+                        ("flag_frequent_exceptionals", "MAJOR", "Frequent exceptional items inflate/deflate reported profits"),
+                        ("flag_high_other_income", "MAJOR", "Other income is a large % of PAT -- core business may be weak"),
+                        ("flag_npm_opm_divergence", "MAJOR", "Net profit margin diverges from operating margin -- below-the-line manipulation risk"),
+                        ("flag_rising_receivables", "MINOR", "Receivable days are increasing -- may indicate credit sales push or collection issues"),
+                        ("flag_rising_inventory", "MINOR", "Inventory days rising -- possible demand slowdown or obsolescence risk"),
+                        ("flag_margin_compression", "MINOR", "Operating margins are narrowing -- competitive or input cost pressure"),
+                        ("flag_wc_divergence", "MINOR", "Working capital cycle diverging from revenue -- efficiency deterioration"),
+                    ] %}
+                    {% for flag_key, sev, description in quality_detail %}
+                    <tr class="border-b border-gray-100 hover:bg-gray-50/50">
+                        <td class="py-2.5 px-3 font-medium text-gray-800 whitespace-nowrap">{{ FLAG_LABELS.get(flag_key, flag_key) }}</td>
+                        <td class="py-2.5 px-3 text-center">
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded
+                                {{ 'bg-red-100 text-red-700' if sev == 'CRITICAL' else ('bg-amber-100 text-amber-700' if sev == 'MAJOR' else 'bg-gray-100 text-gray-600') }}">
+                                {{ sev }}
+                            </span>
+                        </td>
+                        <td class="py-2.5 px-3 text-gray-600">{{ description }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {# Pricing Flags #}
+        <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Pricing Flags</h3>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b-2 border-gray-200">
+                        <th class="py-2 px-3 text-left font-semibold text-gray-600">Flag</th>
+                        <th class="py-2 px-3 text-center font-semibold text-gray-600">Severity</th>
+                        <th class="py-2 px-3 text-left font-semibold text-gray-600">What it means</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set pricing_detail = [
+                        ("flag_negative_ebitda", "CRITICAL", "EBITDA is negative -- the business is operationally loss-making"),
+                        ("flag_negative_pe", "MAJOR", "Negative PE -- the company is currently loss-making"),
+                        ("flag_high_pe", "MINOR", "PE ratio is elevated relative to growth -- may be overpriced"),
+                        ("flag_high_ev_ebitda", "MINOR", "EV/EBITDA is elevated -- expensive on an enterprise value basis"),
+                        ("flag_high_pbv_roe", "MINOR", "Price-to-book is high relative to ROE -- paying a premium not justified by returns"),
+                    ] %}
+                    {% for flag_key, sev, description in pricing_detail %}
+                    <tr class="border-b border-gray-100 hover:bg-gray-50/50">
+                        <td class="py-2.5 px-3 font-medium text-gray-800 whitespace-nowrap">{{ FLAG_LABELS.get(flag_key, flag_key) }}</td>
+                        <td class="py-2.5 px-3 text-center">
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded
+                                {{ 'bg-red-100 text-red-700' if sev == 'CRITICAL' else ('bg-amber-100 text-amber-700' if sev == 'MAJOR' else 'bg-gray-100 text-gray-600') }}">
+                                {{ sev }}
+                            </span>
+                        </td>
+                        <td class="py-2.5 px-3 text-gray-600">{{ description }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 6: Conviction Overrides                                        #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="conviction-overrides" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">6. Conviction Overrides (Stochastic Inversions)</h2>
+        <p class="text-sm text-gray-600 mb-6">
+            These detect <strong>contradictory signals</strong> -- situations where the screening score says one thing
+            but insider behavior (promoter buying/selling) says the opposite.
+            Such contradictions are often more informative than the score itself.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {# Contrarian Bet #}
+            <div class="rounded-xl border-2 border-indigo-200 bg-indigo-50 p-5">
+                <div class="flex items-center gap-2 mb-3">
+                    <span class="px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-500 text-white">CONTRARIAN BET</span>
+                </div>
+                <p class="text-sm text-indigo-900 font-semibold mb-2">Score says bad, insiders say good</p>
+                <ul class="text-xs text-indigo-800 space-y-1.5 ml-4 list-disc">
+                    <li>Original bucket: SCREEN_FAILED or SCREEN_MARGINAL</li>
+                    <li>Promoter increased holding by <strong>>3%</strong> in the last year</li>
+                    <li>Quality severity <strong>&lt;4.0</strong> (not catastrophically broken)</li>
+                    <li>Data confidence <strong>>=50%</strong></li>
+                    <li>Strengthened if insider trading confirms open-market purchases</li>
+                </ul>
+            </div>
+
+            {# Value Trap #}
+            <div class="rounded-xl border-2 border-red-200 bg-red-50 p-5">
+                <div class="flex items-center gap-2 mb-3">
+                    <span class="px-2.5 py-1 rounded-lg text-xs font-bold bg-red-500 text-white">VALUE TRAP</span>
+                </div>
+                <p class="text-sm text-red-900 font-semibold mb-2">Score says good, insiders say run</p>
+                <ul class="text-xs text-red-800 space-y-1.5 ml-4 list-disc">
+                    <li>Original bucket: GATES_CLEARED or PASSED_EXPENSIVE</li>
+                    <li>Promoter reduced holding by <strong>>3%</strong> in the last year</li>
+                    <li>Cross-referenced against insider trading data</li>
+                    <li><strong>Mitigated if:</strong> >50% inter-se transfers, insider is buying, recent open-market purchase in 6 months, or market sell value &lt;3% of MCap</li>
+                    <li>Only confirmed as VALUE_TRAP if genuine open-market selling</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="mt-6 px-4 py-3 rounded-lg bg-gray-50 border border-gray-200 text-xs text-gray-600">
+            <strong>Why this matters:</strong> Promoters have inside knowledge of the business. When their actions contradict
+            the screening score, the contradiction itself is a signal. A failing stock where promoters are aggressively buying
+            may be turning around. A passing stock where promoters are quietly selling may have problems not yet visible in
+            the reported numbers.
+        </div>
+    </section>
+
+
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    {# SECTION 7: Screen Eligibility                                          #}
+    {# ═══════════════════════════════════════════════════════════════════════ #}
+    <section id="screen-eligible" class="mb-12 scroll-mt-20">
+        <h2 class="text-lg font-bold text-gray-900 border-b-2 border-emerald-500 pb-2 mb-6">7. Screen Eligibility Gate</h2>
+        <p class="text-sm text-gray-600 mb-4">
+            Screen eligibility is a <strong>hard binary gate</strong> -- either eligible or blocked. No discretion.
+            A stock is blocked if <em>any</em> of the following conditions are true:
+        </p>
+
+        <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b-2 border-gray-200 bg-gray-50">
+                        <th class="py-2.5 px-4 text-left font-semibold text-gray-600">Blocker Condition</th>
+                        <th class="py-2.5 px-4 text-left font-semibold text-gray-600">Rationale</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="border-b border-gray-100">
+                        <td class="py-2.5 px-4 font-medium text-gray-800">Quality Severity >= 2.0</td>
+                        <td class="py-2.5 px-4 text-gray-600">Critical or multiple major quality defects</td>
+                    </tr>
+                    <tr class="border-b border-gray-100">
+                        <td class="py-2.5 px-4 font-medium text-gray-800">Data Confidence &lt; 50%</td>
+                        <td class="py-2.5 px-4 text-gray-600">Insufficient data to trust the screen</td>
+                    </tr>
+                    <tr class="border-b border-gray-100">
+                        <td class="py-2.5 px-4 font-medium text-gray-800">Earnings Quality = Aggressive</td>
+                        <td class="py-2.5 px-4 text-gray-600">Accounting quality too questionable to screen</td>
+                    </tr>
+                    <tr>
+                        <td class="py-2.5 px-4 font-medium text-gray-800">Promoter Pledge > 50%</td>
+                        <td class="py-2.5 px-4 text-gray-600">Critical pledge level -- survival risk if stock drops</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+</div>
+{% endblock %}
