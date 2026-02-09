@@ -11,11 +11,11 @@ router = APIRouter(tags=["pages"])
 def screener(request: Request):
     params = dict(request.query_params)
 
-    # Convert multi-value params
+    # Convert multi-value params (filter out empty strings from form defaults)
     multi_keys = ["bucket", "band", "risk", "valuation", "sector", "industry"]
     filters = {}
     for key in multi_keys:
-        values = request.query_params.getlist(key)
+        values = [v for v in request.query_params.getlist(key) if v]
         if values:
             filters[key] = values
 
