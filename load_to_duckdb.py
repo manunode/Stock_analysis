@@ -407,10 +407,9 @@ CREATE TABLE IF NOT EXISTS red_flags (
     flag_high_pbv_roe           BOOLEAN
 );
 
--- Sector & Industry level aggregated metrics (computed from stock-level data)
-CREATE TABLE IF NOT EXISTS sector_industry_summary (
-    sector                      TEXT NOT NULL,
-    industry                    TEXT NOT NULL,
+-- Sector level aggregated metrics (computed from stock-level data)
+CREATE TABLE IF NOT EXISTS sector_summary (
+    sector                      TEXT PRIMARY KEY,
     num_companies               INTEGER,
     avg_market_cap              DOUBLE,
     avg_pe                      DOUBLE,
@@ -418,8 +417,20 @@ CREATE TABLE IF NOT EXISTS sector_industry_summary (
     avg_pbv                     DOUBLE,
     avg_roe                     DOUBLE,
     avg_roce                    DOUBLE,
-    avg_roa                     DOUBLE,
-    PRIMARY KEY (sector, industry)
+    avg_roa                     DOUBLE
+);
+
+-- Industry level aggregated metrics (computed from stock-level data)
+CREATE TABLE IF NOT EXISTS industry_summary (
+    industry                    TEXT PRIMARY KEY,
+    num_companies               INTEGER,
+    avg_market_cap              DOUBLE,
+    avg_pe                      DOUBLE,
+    avg_peg                     DOUBLE,
+    avg_pbv                     DOUBLE,
+    avg_roe                     DOUBLE,
+    avg_roce                    DOUBLE,
+    avg_roa                     DOUBLE
 );
 """
 
@@ -498,31 +509,55 @@ def create_database(data):
         ).fetchone()[0]
         print(f"  {table_name:20s} → {count:>5,} rows, {cols:>3} columns")
 
-    # Compute and populate sector_industry_summary from loaded tables
+    # Compute and populate sector_summary from loaded tables
     con.execute("""
-        INSERT INTO sector_industry_summary
+        INSERT INTO sector_summary
         SELECT
             s.sector,
-            s.industry,
-            COUNT(*)                    AS num_companies,
-            ROUND(AVG(s.market_cap), 2) AS avg_market_cap,
-            ROUND(AVG(v.pe), 2)         AS avg_pe,
-            ROUND(AVG(v.peg), 2)        AS avg_peg,
-            ROUND(AVG(v.pbv), 2)        AS avg_pbv,
-            ROUND(AVG(q.roe_latest), 2) AS avg_roe,
+            COUNT(*)                     AS num_companies,
+            ROUND(AVG(s.market_cap), 2)  AS avg_market_cap,
+            ROUND(AVG(v.pe), 2)          AS avg_pe,
+            ROUND(AVG(v.peg), 2)         AS avg_peg,
+            ROUND(AVG(v.pbv), 2)         AS avg_pbv,
+            ROUND(AVG(q.roe_latest), 2)  AS avg_roe,
             ROUND(AVG(q.roce_latest), 2) AS avg_roce,
-            ROUND(AVG(q.roa_latest), 2) AS avg_roa
+            ROUND(AVG(q.roa_latest), 2)  AS avg_roa
         FROM stocks s
         JOIN valuation v ON s.nse_code = v.nse_code
         JOIN quality q   ON s.nse_code = q.nse_code
-        GROUP BY s.sector, s.industry
-        ORDER BY s.sector, s.industry
+        GROUP BY s.sector
+        ORDER BY s.sector
     """)
-    count = con.execute("SELECT COUNT(*) FROM sector_industry_summary").fetchone()[0]
+    count = con.execute("SELECT COUNT(*) FROM sector_summary").fetchone()[0]
     cols = con.execute(
-        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'sector_industry_summary'"
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'sector_summary'"
     ).fetchone()[0]
-    print(f"  {'sector_industry_summary':20s} → {count:>5,} rows, {cols:>3} columns  (computed)")
+    print(f"  {'sector_summary':20s} → {count:>5,} rows, {cols:>3} columns  (computed)")
+
+    # Compute and populate industry_summary from loaded tables
+    con.execute("""
+        INSERT INTO industry_summary
+        SELECT
+            s.industry,
+            COUNT(*)                     AS num_companies,
+            ROUND(AVG(s.market_cap), 2)  AS avg_market_cap,
+            ROUND(AVG(v.pe), 2)          AS avg_pe,
+            ROUND(AVG(v.peg), 2)         AS avg_peg,
+            ROUND(AVG(v.pbv), 2)         AS avg_pbv,
+            ROUND(AVG(q.roe_latest), 2)  AS avg_roe,
+            ROUND(AVG(q.roce_latest), 2) AS avg_roce,
+            ROUND(AVG(q.roa_latest), 2)  AS avg_roa
+        FROM stocks s
+        JOIN valuation v ON s.nse_code = v.nse_code
+        JOIN quality q   ON s.nse_code = q.nse_code
+        GROUP BY s.industry
+        ORDER BY s.industry
+    """)
+    count = con.execute("SELECT COUNT(*) FROM industry_summary").fetchone()[0]
+    cols = con.execute(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'industry_summary'"
+    ).fetchone()[0]
+    print(f"  {'industry_summary':20s} → {count:>5,} rows, {cols:>3} columns  (computed)")
 
     return con
 
@@ -574,24 +609,43 @@ def verify_database(con):
     for r in rows:
         print(f"    {str(r[0]):<45} {r[1]:>5}")
 
-    # Sector-Industry summary sample
-    print("\n  Sector-Industry summary (top 10 by number of companies):")
+    # Sector summary sample
+    print("\n  Sector summary (top 10 by number of companies):")
     rows = con.execute("""
-        SELECT sector, industry, num_companies, avg_market_cap,
+        SELECT sector, num_companies, avg_market_cap,
                avg_pe, avg_peg, avg_pbv, avg_roe, avg_roce, avg_roa
-        FROM sector_industry_summary
+        FROM sector_summary
         ORDER BY num_companies DESC
         LIMIT 10
     """).fetchall()
-    fmt = "    {:<30s} {:<35s} {:>5} {:>10} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}"
-    print(fmt.format("Sector", "Industry", "#Co", "Avg MCap", "PE", "PEG", "PBV", "ROE", "ROCE", "ROA"))
-    print(fmt.format("─"*30, "─"*35, "─"*5, "─"*10, "─"*7, "─"*7, "─"*7, "─"*7, "─"*7, "─"*7))
+    fmt = "    {:<40s} {:>5} {:>10} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}"
+    print(fmt.format("Sector", "#Co", "Avg MCap", "PE", "PEG", "PBV", "ROE", "ROCE", "ROA"))
+    print(fmt.format("─"*40, "─"*5, "─"*10, "─"*7, "─"*7, "─"*7, "─"*7, "─"*7, "─"*7))
     for r in rows:
         def f(v): return f"{v:.1f}" if v is not None else "N/A"
         print(fmt.format(
-            str(r[0])[:30], str(r[1])[:35], r[2],
-            f"{r[3]:,.0f}" if r[3] else "N/A",
-            f(r[4]), f(r[5]), f(r[6]), f(r[7]), f(r[8]), f(r[9])
+            str(r[0])[:40], r[1],
+            f"{r[2]:,.0f}" if r[2] else "N/A",
+            f(r[3]), f(r[4]), f(r[5]), f(r[6]), f(r[7]), f(r[8])
+        ))
+
+    # Industry summary sample
+    print("\n  Industry summary (top 10 by number of companies):")
+    rows = con.execute("""
+        SELECT industry, num_companies, avg_market_cap,
+               avg_pe, avg_peg, avg_pbv, avg_roe, avg_roce, avg_roa
+        FROM industry_summary
+        ORDER BY num_companies DESC
+        LIMIT 10
+    """).fetchall()
+    print(fmt.format("Industry", "#Co", "Avg MCap", "PE", "PEG", "PBV", "ROE", "ROCE", "ROA"))
+    print(fmt.format("─"*40, "─"*5, "─"*10, "─"*7, "─"*7, "─"*7, "─"*7, "─"*7, "─"*7))
+    for r in rows:
+        def f(v): return f"{v:.1f}" if v is not None else "N/A"
+        print(fmt.format(
+            str(r[0])[:40], r[1],
+            f"{r[2]:,.0f}" if r[2] else "N/A",
+            f(r[3]), f(r[4]), f(r[5]), f(r[6]), f(r[7]), f(r[8])
         ))
 
     # Red flag summary
