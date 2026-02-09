@@ -510,18 +510,20 @@ def create_database(data):
         print(f"  {table_name:20s} → {count:>5,} rows, {cols:>3} columns")
 
     # Compute and populate sector_summary from loaded tables
+    # Note: PE, PEG, PBV only average positive values (negative PE = loss-making, meaningless avg)
+    # ROE, ROCE, ROA exclude extreme outliers (abs > 200) to avoid distortion
     con.execute("""
         INSERT INTO sector_summary
         SELECT
             s.sector,
-            COUNT(*)                     AS num_companies,
-            ROUND(AVG(s.market_cap), 2)  AS avg_market_cap,
-            ROUND(AVG(v.pe), 2)          AS avg_pe,
-            ROUND(AVG(v.peg), 2)         AS avg_peg,
-            ROUND(AVG(v.pbv), 2)         AS avg_pbv,
-            ROUND(AVG(q.roe_latest), 2)  AS avg_roe,
-            ROUND(AVG(q.roce_latest), 2) AS avg_roce,
-            ROUND(AVG(q.roa_latest), 2)  AS avg_roa
+            COUNT(*)                                                          AS num_companies,
+            ROUND(AVG(s.market_cap), 2)                                       AS avg_market_cap,
+            ROUND(AVG(CASE WHEN v.pe > 0 AND v.pe < 500 THEN v.pe END), 2)   AS avg_pe,
+            ROUND(AVG(CASE WHEN v.peg > 0 AND v.peg < 50 THEN v.peg END), 2) AS avg_peg,
+            ROUND(AVG(CASE WHEN v.pbv > 0 THEN v.pbv END), 2)                AS avg_pbv,
+            ROUND(AVG(CASE WHEN ABS(q.roe_latest) <= 200 THEN q.roe_latest END), 2)  AS avg_roe,
+            ROUND(AVG(CASE WHEN ABS(q.roce_latest) <= 200 THEN q.roce_latest END), 2) AS avg_roce,
+            ROUND(AVG(CASE WHEN ABS(q.roa_latest) <= 200 THEN q.roa_latest END), 2)  AS avg_roa
         FROM stocks s
         JOIN valuation v ON s.nse_code = v.nse_code
         JOIN quality q   ON s.nse_code = q.nse_code
@@ -535,18 +537,19 @@ def create_database(data):
     print(f"  {'sector_summary':20s} → {count:>5,} rows, {cols:>3} columns  (computed)")
 
     # Compute and populate industry_summary from loaded tables
+    # Same filtering logic as sector_summary above
     con.execute("""
         INSERT INTO industry_summary
         SELECT
             s.industry,
-            COUNT(*)                     AS num_companies,
-            ROUND(AVG(s.market_cap), 2)  AS avg_market_cap,
-            ROUND(AVG(v.pe), 2)          AS avg_pe,
-            ROUND(AVG(v.peg), 2)         AS avg_peg,
-            ROUND(AVG(v.pbv), 2)         AS avg_pbv,
-            ROUND(AVG(q.roe_latest), 2)  AS avg_roe,
-            ROUND(AVG(q.roce_latest), 2) AS avg_roce,
-            ROUND(AVG(q.roa_latest), 2)  AS avg_roa
+            COUNT(*)                                                          AS num_companies,
+            ROUND(AVG(s.market_cap), 2)                                       AS avg_market_cap,
+            ROUND(AVG(CASE WHEN v.pe > 0 AND v.pe < 500 THEN v.pe END), 2)   AS avg_pe,
+            ROUND(AVG(CASE WHEN v.peg > 0 AND v.peg < 50 THEN v.peg END), 2) AS avg_peg,
+            ROUND(AVG(CASE WHEN v.pbv > 0 THEN v.pbv END), 2)                AS avg_pbv,
+            ROUND(AVG(CASE WHEN ABS(q.roe_latest) <= 200 THEN q.roe_latest END), 2)  AS avg_roe,
+            ROUND(AVG(CASE WHEN ABS(q.roce_latest) <= 200 THEN q.roce_latest END), 2) AS avg_roce,
+            ROUND(AVG(CASE WHEN ABS(q.roa_latest) <= 200 THEN q.roa_latest END), 2)  AS avg_roa
         FROM stocks s
         JOIN valuation v ON s.nse_code = v.nse_code
         JOIN quality q   ON s.nse_code = q.nse_code
