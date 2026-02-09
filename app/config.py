@@ -56,6 +56,19 @@ BUCKET_LABELS = {
     "SCREEN_FAILED": "Screen Failed",
 }
 
+# ── Bucket descriptions (for tooltips / explainability) ──────────────────────
+BUCKET_DESCRIPTIONS = {
+    "GATES_CLEARED": "Passed all quality, valuation, and red-flag gates. Highest conviction picks.",
+    "SCREEN_PASSED_VERIFY": "Passed screening but needs manual verification on specific parameters.",
+    "SCREEN_PASSED_FLAGS": "Passed screening but has quality or pricing red flags to investigate.",
+    "SCREEN_PASSED_EXPENSIVE": "Good fundamentals but current valuation appears stretched.",
+    "SCREEN_MARGINAL": "Near the screening threshold. May improve or deteriorate with new data.",
+    "CONTRARIAN_BET": "Failed standard screens but has contrarian characteristics worth exploring.",
+    "VALUE_TRAP": "Looks cheap on multiples but quality issues suggest the low price is justified.",
+    "DATA_INCOMPLETE": "Insufficient data to form a reliable assessment.",
+    "SCREEN_FAILED": "Did not meet minimum quality or financial thresholds.",
+}
+
 # ── Red flag display names ──────────────────────────────────────────────────
 FLAG_LABELS = {
     "flag_low_roe": "Low ROE",

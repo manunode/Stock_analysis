@@ -65,6 +65,7 @@
         {% for b in buckets %}
         {% set colors = BUCKET_COLORS.get(b.decision_bucket, {"bg": "bg-gray-400", "text": "text-white"}) %}
         <a href="/screener?bucket={{ b.decision_bucket }}"
+           title="{{ BUCKET_DESCRIPTIONS.get(b.decision_bucket, '') }}"
            class="group flex-1 min-w-[140px] max-w-[220px] rounded-xl shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
             <div class="{{ colors.bg }} {{ colors.text }} px-4 py-3">
                 <p class="text-sm font-semibold leading-tight">{{ BUCKET_LABELS.get(b.decision_bucket, b.decision_bucket) }}</p>

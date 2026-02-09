@@ -1,127 +1,131 @@
-"""Dynamic SQL query builder for the screener."""
+"""Dynamic SQL query builder for the screener.
 
-from app.database import query_all, query_value
+Uses a declarative filter registry to map UI parameters → SQL fragments,
+keeping the builder predictable and auditable.
+"""
+
+from app.database import query_all
+
+
+# ── Filter Registry ──────────────────────────────────────────────────────────
+# Each entry: param_name → (sql_column, filter_type)
+# filter_type is one of: "in", ">=", "<=", "bool_true", "bool_zero"
+
+IN_FILTERS: dict[str, str] = {
+    "bucket":    "a.decision_bucket",
+    "band":      "a.score_band",
+    "risk":      "a.quality_risk",
+    "valuation": "v.valuation_band",
+    "sector":    "s.sector",
+    "industry":  "s.industry",
+}
+
+RANGE_FILTERS: dict[str, tuple[str, str]] = {
+    "min_score":    ("a.composite_score", ">="),
+    "max_score":    ("a.composite_score", "<="),
+    "min_mcap":     ("s.market_cap",      ">="),
+    "max_mcap":     ("s.market_cap",      "<="),
+    "min_pe":       ("v.pe",              ">="),
+    "max_pe":       ("v.pe",              "<="),
+    "min_roe":      ("q.roe_latest",      ">="),
+    "min_roce":     ("q.roce_latest",     ">="),
+    "max_de":       ("l.debt_equity",     "<="),
+    "min_promoter": ("sh.promoter_holding",">="),
+}
+
+BOOL_FILTERS: dict[str, str] = {
+    "screen_eligible": "a.screen_eligible = true",
+    "no_red_flags":    "rf.red_flag_count = 0",
+}
+
+ALLOWED_SORTS: dict[str, str] = {
+    "score":  "a.composite_score",
+    "name":   "s.stock_name",
+    "mcap":   "s.market_cap",
+    "pe":     "v.pe",
+    "roe":    "q.roe_latest",
+    "roce":   "q.roce_latest",
+    "return": "v.return_1yr",
+    "de":     "l.debt_equity",
+}
+
+BASE_QUERY = """
+    SELECT s.nse_code, s.stock_name, s.sector, s.industry, s.market_cap,
+           a.decision_bucket, a.composite_score, a.score_band,
+           a.quality_risk, a.screen_eligible,
+           v.pe, v.pbv, v.peg, v.valuation_band, v.ltp,
+           v.return_1yr, v.valuation_comfort_score,
+           q.roe_latest, q.roce_latest, q.piotroski_score,
+           q.business_quality_score,
+           l.debt_equity,
+           g.revenue_growth_ttm, g.eps,
+           sh.promoter_holding,
+           rf.red_flag_count
+    FROM stocks s
+    JOIN analysis a ON s.nse_code = a.nse_code
+    JOIN valuation v ON s.nse_code = v.nse_code
+    JOIN quality q ON s.nse_code = q.nse_code
+    JOIN leverage l ON s.nse_code = l.nse_code
+    JOIN growth g ON s.nse_code = g.nse_code
+    JOIN shareholding sh ON s.nse_code = sh.nse_code
+    JOIN red_flags rf ON s.nse_code = rf.nse_code
+"""
+
+
+def _normalize_list(val) -> list:
+    """Ensure a filter value is always a list."""
+    if isinstance(val, list):
+        return val
+    return [val]
 
 
 def build_screener_query(filters: dict) -> tuple[str, list]:
-    """Build a dynamic SQL query from screener filter parameters."""
-    base = """
-        SELECT s.nse_code, s.stock_name, s.sector, s.industry, s.market_cap,
-               a.decision_bucket, a.composite_score, a.score_band,
-               a.quality_risk, a.screen_eligible,
-               v.pe, v.pbv, v.peg, v.valuation_band, v.ltp,
-               v.return_1yr, v.valuation_comfort_score,
-               q.roe_latest, q.roce_latest, q.piotroski_score,
-               q.business_quality_score,
-               l.debt_equity,
-               g.revenue_growth_ttm, g.eps,
-               sh.promoter_holding,
-               rf.red_flag_count
-        FROM stocks s
-        JOIN analysis a ON s.nse_code = a.nse_code
-        JOIN valuation v ON s.nse_code = v.nse_code
-        JOIN quality q ON s.nse_code = q.nse_code
-        JOIN leverage l ON s.nse_code = l.nse_code
-        JOIN growth g ON s.nse_code = g.nse_code
-        JOIN shareholding sh ON s.nse_code = sh.nse_code
-        JOIN red_flags rf ON s.nse_code = rf.nse_code
+    """Build a parameterized SQL query from screener filter parameters.
+
+    All filter→SQL mappings come from the registries above.
+    No ad-hoc string interpolation of user input.
     """
-    conditions = []
-    params = []
+    conditions: list[str] = []
+    params: list = []
 
-    # Decision bucket filter
-    if filters.get("bucket"):
-        buckets = filters["bucket"] if isinstance(filters["bucket"], list) else [filters["bucket"]]
-        placeholders = ",".join(["?" for _ in buckets])
-        conditions.append(f"a.decision_bucket IN ({placeholders})")
-        params.extend(buckets)
+    # IN filters: categorical multi-select
+    for param, column in IN_FILTERS.items():
+        values = filters.get(param)
+        if not values:
+            continue
+        values = _normalize_list(values)
+        placeholders = ", ".join("?" for _ in values)
+        conditions.append(f"{column} IN ({placeholders})")
+        params.extend(values)
 
-    # Score band filter
-    if filters.get("band"):
-        bands = filters["band"] if isinstance(filters["band"], list) else [filters["band"]]
-        placeholders = ",".join(["?" for _ in bands])
-        conditions.append(f"a.score_band IN ({placeholders})")
-        params.extend(bands)
+    # Range filters: numeric comparisons
+    for param, (column, op) in RANGE_FILTERS.items():
+        val = filters.get(param)
+        if val is None or val == "":
+            continue
+        try:
+            params.append(float(val))
+            conditions.append(f"{column} {op} ?")
+        except (ValueError, TypeError):
+            pass  # silently skip non-numeric input
 
-    # Quality risk filter
-    if filters.get("risk"):
-        risks = filters["risk"] if isinstance(filters["risk"], list) else [filters["risk"]]
-        placeholders = ",".join(["?" for _ in risks])
-        conditions.append(f"a.quality_risk IN ({placeholders})")
-        params.extend(risks)
+    # Boolean toggles: fixed SQL fragments (no user input in the SQL)
+    for param, sql_fragment in BOOL_FILTERS.items():
+        if filters.get(param):
+            conditions.append(sql_fragment)
 
-    # Valuation band filter
-    if filters.get("valuation"):
-        vals = filters["valuation"] if isinstance(filters["valuation"], list) else [filters["valuation"]]
-        placeholders = ",".join(["?" for _ in vals])
-        conditions.append(f"v.valuation_band IN ({placeholders})")
-        params.extend(vals)
-
-    # Sector filter
-    if filters.get("sector"):
-        sectors = filters["sector"] if isinstance(filters["sector"], list) else [filters["sector"]]
-        placeholders = ",".join(["?" for _ in sectors])
-        conditions.append(f"s.sector IN ({placeholders})")
-        params.extend(sectors)
-
-    # Industry filter
-    if filters.get("industry"):
-        industries = filters["industry"] if isinstance(filters["industry"], list) else [filters["industry"]]
-        placeholders = ",".join(["?" for _ in industries])
-        conditions.append(f"s.industry IN ({placeholders})")
-        params.extend(industries)
-
-    # Numeric range filters
-    range_filters = {
-        "min_score": ("a.composite_score", ">="),
-        "max_score": ("a.composite_score", "<="),
-        "min_mcap": ("s.market_cap", ">="),
-        "max_mcap": ("s.market_cap", "<="),
-        "min_pe": ("v.pe", ">="),
-        "max_pe": ("v.pe", "<="),
-        "min_roe": ("q.roe_latest", ">="),
-        "min_roce": ("q.roce_latest", ">="),
-        "max_de": ("l.debt_equity", "<="),
-        "min_promoter": ("sh.promoter_holding", ">="),
-    }
-    for key, (col, op) in range_filters.items():
-        val = filters.get(key)
-        if val is not None and val != "":
-            try:
-                conditions.append(f"{col} {op} ?")
-                params.append(float(val))
-            except ValueError:
-                pass
-
-    # Boolean toggles
-    if filters.get("screen_eligible"):
-        conditions.append("a.screen_eligible = true")
-    if filters.get("no_red_flags"):
-        conditions.append("rf.red_flag_count = 0")
-    if filters.get("dividend_paying"):
-        conditions.append("d.dividend_count > 0")
-
+    # Assemble WHERE clause
+    sql = BASE_QUERY
     if conditions:
-        base += " WHERE " + " AND ".join(conditions)
+        sql += " WHERE " + " AND ".join(conditions)
 
-    # Sorting
-    sort_col = filters.get("sort", "a.composite_score")
-    sort_dir = filters.get("dir", "DESC")
-    allowed_sorts = {
-        "score": "a.composite_score",
-        "name": "s.stock_name",
-        "mcap": "s.market_cap",
-        "pe": "v.pe",
-        "roe": "q.roe_latest",
-        "roce": "q.roce_latest",
-        "return": "v.return_1yr",
-        "de": "l.debt_equity",
-    }
-    sort_column = allowed_sorts.get(sort_col, "a.composite_score")
-    sort_direction = "ASC" if sort_dir == "ASC" else "DESC"
-    base += f" ORDER BY {sort_column} {sort_direction} NULLS LAST"
+    # Sorting: whitelist-validated
+    sort_key = filters.get("sort", "score")
+    sort_column = ALLOWED_SORTS.get(sort_key, "a.composite_score")
+    sort_direction = "ASC" if filters.get("dir") == "ASC" else "DESC"
+    sql += f" ORDER BY {sort_column} {sort_direction} NULLS LAST"
 
-    return base, params
+    return sql, params
 
 
 def get_screener_results(filters: dict) -> list[dict]:

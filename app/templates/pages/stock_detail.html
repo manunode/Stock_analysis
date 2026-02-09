@@ -117,10 +117,11 @@
                 </div>
             </div>
 
-            {# Decision Bucket badge #}
+            {# Decision Bucket badge with description tooltip #}
             {% set bucket = s.decision_bucket or 'SCREEN_FAILED' %}
             {% set bc = BUCKET_COLORS.get(bucket, BUCKET_COLORS['SCREEN_FAILED']) %}
-            <span class="px-3 py-1.5 rounded-lg text-xs font-bold {{ bc.bg }} {{ bc.text }} border {{ bc.border }}">
+            <span class="px-3 py-1.5 rounded-lg text-xs font-bold {{ bc.bg }} {{ bc.text }} border {{ bc.border }} cursor-help"
+                  title="{{ BUCKET_DESCRIPTIONS.get(bucket, '') }}">
                 {{ BUCKET_LABELS.get(bucket, bucket) }}
             </span>
 
@@ -204,6 +205,45 @@
             {{ metric_card("PEG", s.peg, "fmt", s.sector_avg_peg, s.industry_avg_peg, true) }}
         </div>
 
+        {# Red flag alert bar (surfaced from Red Flags tab) #}
+        {% if s.red_flag_count is not none and s.red_flag_count > 0 %}
+        <div class="mb-6 rounded-xl border p-4 flex items-start gap-3
+            {{ 'bg-red-50 border-red-200' if s.red_flag_count > 3 else 'bg-amber-50 border-amber-200' }}">
+            <div class="flex-shrink-0 mt-0.5">
+                <svg class="w-5 h-5 {{ 'text-red-500' if s.red_flag_count > 3 else 'text-amber-500' }}" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="text-sm font-bold {{ 'text-red-800' if s.red_flag_count > 3 else 'text-amber-800' }}">
+                        {{ s.red_flag_count }} Red Flag{{ 's' if s.red_flag_count != 1 else '' }} Detected
+                    </span>
+                    {% if s.quality_flag_count %}<span class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700">{{ s.quality_flag_count }} quality</span>{% endif %}
+                    {% if s.pricing_flag_count %}<span class="text-xs px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">{{ s.pricing_flag_count }} pricing</span>{% endif %}
+                </div>
+                {# Show active flags inline #}
+                <div class="flex flex-wrap gap-1.5">
+                    {% for flag_key in QUALITY_FLAGS + PRICING_FLAGS %}
+                        {% if s.get(flag_key) %}
+                        <span class="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{{ FLAG_LABELS.get(flag_key, flag_key) }}</span>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+            <button @click="tab = 'redflags'" class="flex-shrink-0 text-xs font-medium {{ 'text-red-600 hover:text-red-800' if s.red_flag_count > 3 else 'text-amber-600 hover:text-amber-800' }} underline">
+                View details
+            </button>
+        </div>
+        {% elif s.red_flag_count is not none and s.red_flag_count == 0 %}
+        <div class="mb-6 rounded-xl border bg-green-50 border-green-200 p-3 flex items-center gap-2">
+            <svg class="w-5 h-5 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+            </svg>
+            <span class="text-sm font-medium text-green-800">No red flags detected</span>
+        </div>
+        {% endif %}
+
         {# Radar chart + Key Info side by side #}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
 
@@ -213,6 +253,10 @@
                 <div class="relative" style="max-height: 340px;">
                     <canvas id="radarChart"></canvas>
                 </div>
+                <p class="mt-3 text-[10px] text-gray-400 text-center leading-tight">
+                    All axes normalized to 0-100. Quality/Valuation/Strength/Growth scores are native 0-100.
+                    Cash Flow = positive CFO years &times; 20. Piotroski = F-Score &times; 11.1. Hover for raw values.
+                </p>
             </div>
 
             {# Key information card #}
@@ -977,10 +1021,13 @@
                     <th class="py-2.5 px-3 text-left text-xs font-semibold text-gray-500 uppercase">Metric</th>
                     <th class="py-2.5 px-3 text-right text-xs font-semibold text-emerald-600 uppercase">This Stock</th>
                     <th class="py-2.5 px-3 text-right text-xs font-semibold text-blue-600 uppercase">Sector Avg</th>
+                    <th class="py-2.5 px-3 text-right text-xs font-semibold text-blue-400 uppercase">vs Sector</th>
                     <th class="py-2.5 px-3 text-right text-xs font-semibold text-purple-600 uppercase">Industry Avg</th>
+                    <th class="py-2.5 px-3 text-right text-xs font-semibold text-purple-400 uppercase">vs Industry</th>
                 </tr>
             </thead>
             <tbody>
+                {# bench: (label, stock_val, sector_val, industry_val, is_pct, lower_is_better) #}
                 {% set bench = [
                     ("PE Ratio", s.pe, s.sector_avg_pe, s.industry_avg_pe, false, true),
                     ("PEG", s.peg, s.sector_avg_peg, s.industry_avg_peg, false, true),
@@ -990,7 +1037,7 @@
                     ("ROA %", s.roa_latest, s.sector_avg_roa, s.industry_avg_roa, true, false),
                     ("Market Cap (Cr)", s.market_cap, s.sector_avg_market_cap, s.industry_avg_market_cap, false, false),
                 ] %}
-                {% for label, stock_val, sect_val, ind_val, is_pct_val, invert in bench %}
+                {% for label, stock_val, sect_val, ind_val, is_pct_val, lower_better in bench %}
                 <tr class="border-b border-gray-50 hover:bg-gray-50/50">
                     <td class="py-2.5 px-3 font-medium text-gray-700">{{ label }}</td>
                     <td class="py-2.5 px-3 text-right font-semibold text-gray-900">
@@ -1003,9 +1050,39 @@
                             {% if is_pct_val %}{{ sect_val|pct }}{% else %}{{ sect_val|fmt }}{% endif %}
                         {% else %}--{% endif %}
                     </td>
+                    {# Delta vs Sector #}
+                    <td class="py-2.5 px-3 text-right font-semibold text-xs">
+                        {% if stock_val is not none and sect_val is not none %}
+                            {% set delta = stock_val - sect_val %}
+                            {% if lower_better %}
+                                <span class="{{ 'text-green-600' if delta < 0 else ('text-red-600' if delta > 0 else 'text-gray-400') }}">
+                                    {{ '%+.1f'|format(delta) }}{% if is_pct_val %}pp{% endif %}
+                                </span>
+                            {% else %}
+                                <span class="{{ 'text-green-600' if delta > 0 else ('text-red-600' if delta < 0 else 'text-gray-400') }}">
+                                    {{ '%+.1f'|format(delta) }}{% if is_pct_val %}pp{% endif %}
+                                </span>
+                            {% endif %}
+                        {% else %}--{% endif %}
+                    </td>
                     <td class="py-2.5 px-3 text-right text-purple-600">
                         {% if ind_val is not none %}
                             {% if is_pct_val %}{{ ind_val|pct }}{% else %}{{ ind_val|fmt }}{% endif %}
+                        {% else %}--{% endif %}
+                    </td>
+                    {# Delta vs Industry #}
+                    <td class="py-2.5 px-3 text-right font-semibold text-xs">
+                        {% if stock_val is not none and ind_val is not none %}
+                            {% set delta = stock_val - ind_val %}
+                            {% if lower_better %}
+                                <span class="{{ 'text-green-600' if delta < 0 else ('text-red-600' if delta > 0 else 'text-gray-400') }}">
+                                    {{ '%+.1f'|format(delta) }}{% if is_pct_val %}pp{% endif %}
+                                </span>
+                            {% else %}
+                                <span class="{{ 'text-green-600' if delta > 0 else ('text-red-600' if delta < 0 else 'text-gray-400') }}">
+                                    {{ '%+.1f'|format(delta) }}{% if is_pct_val %}pp{% endif %}
+                                </span>
+                            {% endif %}
                         {% else %}--{% endif %}
                     </td>
                 </tr>
@@ -1038,8 +1115,20 @@ document.addEventListener('DOMContentLoaded', function() {
         const vc  = {{ s.valuation_comfort_score | default(0, true) | float }};
         const fs  = {{ s.financial_strength_score | default(0, true) | float }};
         const gd  = {{ s.growth_durability_score | default(0, true) | float }};
-        const cfo = Math.min({{ (s.positive_cfo_years or 0) | float }} * 20, 100);
-        const pio = Math.min({{ (s.piotroski_score or 0) | float }} * 11.1, 100);
+        const cfoRaw = {{ (s.positive_cfo_years or 0) | float }};
+        const cfo = Math.min(cfoRaw * 20, 100);
+        const pioRaw = {{ (s.piotroski_score or 0) | float }};
+        const pio = Math.min(pioRaw * 11.1, 100);
+
+        /* Raw values & scale descriptions for rich tooltips */
+        const rawValues = [
+            { raw: bq, scale: '/100' },
+            { raw: vc, scale: '/100' },
+            { raw: fs, scale: '/100' },
+            { raw: gd, scale: '/100' },
+            { raw: cfoRaw, scale: ' yrs positive CFO' },
+            { raw: pioRaw, scale: '/9' },
+        ];
 
         new Chart(radarCtx, {
             type: 'radar',
@@ -1083,8 +1172,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     legend: { display: false },
                     tooltip: {
                         callbacks: {
+                            title: function(items) { return items[0].label; },
                             label: function(ctx) {
-                                return ctx.label + ': ' + ctx.raw.toFixed(1);
+                                const rv = rawValues[ctx.dataIndex];
+                                return [
+                                    'Normalized: ' + ctx.raw.toFixed(1) + '/100',
+                                    'Actual: ' + rv.raw.toFixed(1) + rv.scale
+                                ];
                             }
                         }
                     }
