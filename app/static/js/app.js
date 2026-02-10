@@ -22,6 +22,53 @@ function searchWidget() {
     };
 }
 
+// ── Compare stock picker (Alpine.js component) ─────────────────────────────
+function comparePicker() {
+    return {
+        query: '',
+        results: [],
+        selected: JSON.parse(document.querySelector('[x-data]')?.dataset?.initial || '[]'),
+        init() {
+            // Parse initial stocks from URL
+            const params = new URLSearchParams(window.location.search);
+            const stocks = params.get('stocks');
+            if (stocks) {
+                this.selected = stocks.split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 5);
+            }
+        },
+        async search() {
+            if (this.query.length < 1 || this.selected.length >= 5) {
+                this.results = [];
+                return;
+            }
+            try {
+                const resp = await fetch(`/api/search?q=${encodeURIComponent(this.query)}`);
+                const data = await resp.json();
+                // Filter out already-selected stocks
+                this.results = data.filter(r => !this.selected.includes(r.nse_code));
+            } catch (e) {
+                this.results = [];
+            }
+        },
+        addFromResults(idx) {
+            if (this.selected.length >= 5) return;
+            const stock = this.results[idx];
+            if (stock && !this.selected.includes(stock.nse_code)) {
+                this.selected.push(stock.nse_code);
+            }
+            this.query = '';
+            this.results = [];
+        },
+        remove(idx) {
+            this.selected.splice(idx, 1);
+        },
+        go() {
+            if (this.selected.length === 0) return;
+            window.location.href = '/compare?stocks=' + encodeURIComponent(this.selected.join(','));
+        }
+    };
+}
+
 // ── Radar Chart builder ─────────────────────────────────────────────────────
 function createRadarChart(canvasId, data, labels) {
     const ctx = document.getElementById(canvasId);

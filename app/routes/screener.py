@@ -1,8 +1,9 @@
 """Stock screener route with dynamic filtering."""
 
+import math
 from fastapi import APIRouter, Request
 from app.main import templates
-from app.services.screener_service import get_screener_results, get_filter_options
+from app.services.screener_service import get_screener_results, get_screener_count, get_filter_options, PAGE_SIZE
 
 router = APIRouter(tags=["pages"])
 
@@ -35,20 +36,33 @@ def screener(request: Request):
         if params.get(key):
             filters[key] = True
 
-    results = get_screener_results(filters)
+    # Pagination
+    try:
+        page = max(1, int(params.get("page", 1)))
+    except (ValueError, TypeError):
+        page = 1
+
+    # Count first, clamp page, then query (avoids empty results on past-end page)
+    total = get_screener_count(filters)
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    page = min(page, total_pages)
+    results = get_screener_results(filters, page=page)
+
     options = get_filter_options()
+
+    ctx = {
+        "request": request,
+        "results": results,
+        "filters": filters,
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+        "page_size": PAGE_SIZE,
+    }
 
     # Check if HTMX partial request
     if request.headers.get("HX-Request"):
-        return templates.TemplateResponse("partials/screener_table.html", {
-            "request": request,
-            "results": results,
-            "filters": filters,
-        })
+        return templates.TemplateResponse("partials/screener_table.html", ctx)
 
-    return templates.TemplateResponse("pages/screener.html", {
-        "request": request,
-        "results": results,
-        "options": options,
-        "filters": filters,
-    })
+    ctx["options"] = options
+    return templates.TemplateResponse("pages/screener.html", ctx)

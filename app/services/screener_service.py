@@ -4,7 +4,9 @@ Uses a declarative filter registry to map UI parameters → SQL fragments,
 keeping the builder predictable and auditable.
 """
 
-from app.database import query_all
+from app.database import query_all, query_value
+
+PAGE_SIZE = 50
 
 
 # ── Filter Registry ──────────────────────────────────────────────────────────
@@ -128,9 +130,18 @@ def build_screener_query(filters: dict) -> tuple[str, list]:
     return sql, params
 
 
-def get_screener_results(filters: dict) -> list[dict]:
-    """Run the screener query and return results."""
+def get_screener_count(filters: dict) -> int:
+    """Return total matching rows for current filters."""
     sql, params = build_screener_query(filters)
+    count_sql = f"SELECT COUNT(*) FROM ({sql.split('ORDER BY')[0]}) _c"
+    return query_value(count_sql, params) or 0
+
+
+def get_screener_results(filters: dict, page: int = 1) -> list[dict]:
+    """Run the screener query for a given page. Returns rows."""
+    sql, params = build_screener_query(filters)
+    offset = (max(1, page) - 1) * PAGE_SIZE
+    sql += f" LIMIT {PAGE_SIZE} OFFSET {offset}"
     return query_all(sql, params)
 
 

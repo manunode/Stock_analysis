@@ -9,7 +9,7 @@
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-5">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">Stock Screener</h1>
-            <p class="text-sm text-gray-500 mt-0.5">{{ results | length }} stocks found</p>
+            <p class="text-sm text-gray-500 mt-0.5">{{ total | fmt(0) }} stocks found</p>
         </div>
         <button @click="showFilters = !showFilters"
                 class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 shadow-sm transition">
@@ -223,7 +223,7 @@
         {# Build query string preserving existing filters #}
         {%- set ns = namespace(qs_parts=[]) -%}
         {%- for key, val in filters.items() -%}
-            {%- if key not in ('sort', 'dir') -%}
+            {%- if key not in ('sort', 'dir', 'page') -%}
                 {%- if val is iterable and val is not string -%}
                     {%- for v in val -%}
                         {%- set ns.qs_parts = ns.qs_parts + [key ~ '=' ~ v] -%}
@@ -398,10 +398,82 @@
         </div>
     </div>
 
-    {# ── Bottom result count ───────────────────────────────────────────────── #}
+    {# ── Pagination ─────────────────────────────────────────────────────────── #}
+    {# Build base query string preserving all filters (excluding page) #}
+    {%- set ns = namespace(qs_parts=[]) -%}
+    {%- for key, val in filters.items() -%}
+        {%- if key != 'page' -%}
+            {%- if val is iterable and val is not string -%}
+                {%- for v in val -%}
+                    {%- set ns.qs_parts = ns.qs_parts + [key ~ '=' ~ v] -%}
+                {%- endfor -%}
+            {%- elif val is sameas true -%}
+                {%- set ns.qs_parts = ns.qs_parts + [key ~ '=1'] -%}
+            {%- else -%}
+                {%- set ns.qs_parts = ns.qs_parts + [key ~ '=' ~ val] -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- set base_qs = ns.qs_parts | join('&') -%}
+
     {% if results %}
-    <div class="mt-4 text-sm text-gray-500 text-center">
-        Showing {{ results | length }} stock{{ 's' if results | length != 1 else '' }}
+    <div class="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+        {# Result info #}
+        <p class="text-sm text-gray-500">
+            Showing {{ (page - 1) * page_size + 1 }}–{{ [(page - 1) * page_size + results | length, total] | min }}
+            of {{ total | fmt(0) }} stocks
+        </p>
+
+        {# Page controls #}
+        {% if total_pages > 1 %}
+        <nav class="flex items-center gap-1">
+            {# Previous #}
+            {% if page > 1 %}
+            <a href="/screener?{{ base_qs }}{{'&' if base_qs}}page={{ page - 1 }}"
+               class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition">&laquo; Prev</a>
+            {% else %}
+            <span class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-gray-50 text-gray-300 cursor-not-allowed">&laquo; Prev</span>
+            {% endif %}
+
+            {# Page numbers (show max 7 pages around current) #}
+            {% set start_page = [1, page - 3] | max %}
+            {% set end_page = [total_pages, start_page + 6] | min %}
+            {% set start_page = [1, end_page - 6] | max %}
+
+            {% if start_page > 1 %}
+            <a href="/screener?{{ base_qs }}{{'&' if base_qs}}page=1"
+               class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition">1</a>
+            {% if start_page > 2 %}
+            <span class="px-1 text-gray-400">...</span>
+            {% endif %}
+            {% endif %}
+
+            {% for p in range(start_page, end_page + 1) %}
+            {% if p == page %}
+            <span class="px-3 py-1.5 text-sm font-bold rounded-lg bg-emerald-600 text-white">{{ p }}</span>
+            {% else %}
+            <a href="/screener?{{ base_qs }}{{'&' if base_qs}}page={{ p }}"
+               class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition">{{ p }}</a>
+            {% endif %}
+            {% endfor %}
+
+            {% if end_page < total_pages %}
+            {% if end_page < total_pages - 1 %}
+            <span class="px-1 text-gray-400">...</span>
+            {% endif %}
+            <a href="/screener?{{ base_qs }}{{'&' if base_qs}}page={{ total_pages }}"
+               class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition">{{ total_pages }}</a>
+            {% endif %}
+
+            {# Next #}
+            {% if page < total_pages %}
+            <a href="/screener?{{ base_qs }}{{'&' if base_qs}}page={{ page + 1 }}"
+               class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition">Next &raquo;</a>
+            {% else %}
+            <span class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-gray-50 text-gray-300 cursor-not-allowed">Next &raquo;</span>
+            {% endif %}
+        </nav>
+        {% endif %}
     </div>
     {% endif %}
 
