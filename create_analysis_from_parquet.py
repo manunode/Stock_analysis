@@ -402,7 +402,19 @@ def build_cashflow_sheet(m):
     """Build cash flow metrics sheet."""
     cfo = pd.Series(m.get('Cash from operations last year_cf', np.nan), dtype=float)
     fcf = pd.Series(m.get('Free cash flow last year_cf', np.nan), dtype=float)
-    pat = pd.Series(m.get('Profit after tax_ann', np.nan), dtype=float)
+    pat_annual = pd.Series(m.get('Profit after tax_ann', np.nan), dtype=float)
+
+    # TTM PAT from quarterly data (sum of last 4 quarters)
+    np_q1 = pd.Series(m.get('Net Profit latest quarter_qtr', np.nan), dtype=float)
+    np_q2 = pd.Series(m.get('Net Profit preceding quarter_qtr', np.nan), dtype=float)
+    np_q3 = pd.Series(m.get('Net profit 2quarters back_qtr', np.nan), dtype=float)
+    np_q4 = pd.Series(m.get('Net profit 3quarters back_qtr', np.nan), dtype=float)
+    pat_ttm = np_q1 + np_q2 + np_q3 + np_q4
+
+    # Use TTM PAT where available, fallback to annual
+    pat = np.where(pd.notna(pat_ttm) & (pat_ttm != 0), pat_ttm, pat_annual)
+    pat = pd.Series(pat, dtype=float)
+
     cfo_pat = safe_div(cfo, pat)
 
     # 3yr cumulative CFO and FCF
@@ -415,8 +427,47 @@ def build_cashflow_sheet(m):
     cfo_10yr = pd.Series(m.get('Operating cash flow 10years_cf', np.nan), dtype=float)
     fcf_10yr = pd.Series(m.get('Free cash flow 10years_cf', np.nan), dtype=float)
 
+    # 3yr CFO/PAT: Use average of individual year ratios (not ratio of sums)
+    # This weights each year equally, preventing one blockbuster year from masking
+    # a terrible year — matching the original script's approach.
+    pat_ly = pd.Series(m.get('Profit after tax last year_ann', np.nan), dtype=float)
+    pat_py = pd.Series(m.get('Profit after tax preceding year_ann', np.nan), dtype=float)
+    pat_3yr_cum = pat_annual + pat_ly + pat_py
+
+    # Individual year CFO/PAT ratios
+    cfo_py_series = pd.Series(m.get('Cash from operations preceding year_cf', np.nan), dtype=float)
+    cfo_yr3_raw = cfo_3yr - cfo - cfo_py_series  # inferred 3rd year back
+    ratio_yr1 = safe_div(cfo, pat_annual)
+    ratio_yr2 = safe_div(cfo_py_series, pat_ly)
+    ratio_yr3 = safe_div(cfo_yr3_raw, pat_py)
+
+    # Average of individual year ratios (more conservative than ratio of sums)
+    # Only average where individual ratios are not NaN
+    r1 = pd.Series(ratio_yr1, dtype=float)
+    r2 = pd.Series(ratio_yr2, dtype=float)
+    r3 = pd.Series(ratio_yr3, dtype=float)
+    ratio_sum = r1.fillna(0) + r2.fillna(0) + r3.fillna(0)
+    ratio_count = (~pd.isna(r1)).astype(int) + (~pd.isna(r2)).astype(int) + (~pd.isna(r3)).astype(int)
+    cfo_pat_3yr_avg = np.where(ratio_count >= 2, ratio_sum / ratio_count, safe_div(cfo_3yr, pat_3yr_cum))
+    cfo_pat_3yr_avg = pd.Series(cfo_pat_3yr_avg, dtype=float)
+
+    # Track the worst individual year ratio (for flagging)
+    worst_yr_ratio = np.minimum(np.minimum(
+        np.where(pd.isna(r1), 999, r1),
+        np.where(pd.isna(r2), 999, r2)),
+        np.where(pd.isna(r3), 999, r3))
+    worst_yr_ratio = np.where(worst_yr_ratio == 999, np.nan, worst_yr_ratio)
+
+    # Infer Year 3 CFO: cumulative_3yr - latest - preceding
+    cfo_py = cfo_py_series  # already computed above
+    cfo_yr3 = cfo_yr3_raw  # already computed above
+
+    # Count positive CFO years (from what we can reconstruct: latest, preceding, inferred yr3)
+    pos_cfo_count = ((cfo > 0).astype(int) +
+                     (cfo_py > 0).astype(int) +
+                     (cfo_yr3 > 0).astype(int))
+
     # CFO trend: compare latest to preceding year
-    cfo_py = pd.Series(m.get('Cash from operations preceding year_cf', np.nan), dtype=float)
     cfo_trend = np.where(pd.isna(cfo) | pd.isna(cfo_py), 'N/A',
                 np.where(cfo > cfo_py * 1.1, 'IMPROVING',
                 np.where(cfo < cfo_py * 0.9, 'DECLINING', 'STABLE')))
@@ -447,12 +498,22 @@ def build_cashflow_sheet(m):
         'ISIN': m['ISIN Code'],
         'CFO_Latest': cfo,
         'PAT_Latest': pat,
+        'PAT_TTM': pat_ttm,
+        'PAT_Annual': pat_annual,
         'CFO_PAT_Latest': cfo_pat,
+        'CFO_PAT_3Yr_Avg': cfo_pat_3yr_avg,
+        'Positive_CFO_Years_3Yr': pos_cfo_count,
+        'CFO_Year3_Inferred': cfo_yr3,
+        'Worst_Year_CFO_PAT': worst_yr_ratio,
         'FCF_Latest': fcf,
         'CFO_Preceding_Year': cfo_py,
         'CFO_Trend': cfo_trend,
         'CFO_3Yr_Cumulative': cfo_3yr,
         'CFO_5Yr_Cumulative': cfo_5yr,
+        'CFO_7Yr_Cumulative': cfo_7yr,
+        'CFO_10Yr_Cumulative': cfo_10yr,
+        'FCF_3Yr_Cumulative': fcf_3yr,
+        'FCF_5Yr_Cumulative': fcf_5yr,
         'CFO_7Yr_Cumulative': cfo_7yr,
         'CFO_10Yr_Cumulative': cfo_10yr,
         'FCF_3Yr_Cumulative': fcf_3yr,
@@ -786,7 +847,11 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
 
     cfo = cashflow_df['CFO_Latest'].values.astype(float)
     cfo_pat = cashflow_df['CFO_PAT_Latest'].values.astype(float)
+    cfo_pat_3yr = cashflow_df['CFO_PAT_3Yr_Avg'].values.astype(float)
+    worst_yr_cfo_pat = cashflow_df['Worst_Year_CFO_PAT'].values.astype(float)
     cfo_3yr = cashflow_df['CFO_3Yr_Cumulative'].values.astype(float)
+    cfo_yr3 = cashflow_df['CFO_Year3_Inferred'].values.astype(float)
+    pos_cfo_years = cashflow_df['Positive_CFO_Years_3Yr'].values.astype(float)
     wc_rev_ratio = cashflow_df['WC_Rev_Growth_Ratio'].values.astype(float)
 
     de = leverage_df['Debt_Equity'].values.astype(float)
@@ -802,9 +867,45 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
     flag_declining_roe = (~np.isnan(roe)) & (~np.isnan(roe_3)) & (roe < roe_3 - 2) & (roe < 15)
     flag_low_roce = (~np.isnan(roce)) & (roce < 10)
     flag_declining_roce = (~np.isnan(roce)) & (~np.isnan(roce_3)) & (roce < roce_3 - 2) & (roce < 15)
-    flag_poor_cash = (~np.isnan(cfo_pat)) & (cfo_pat < 0.7) & (cfo_pat >= 0)
+
+    # POOR_CASH_CONVERSION: Use 3yr average-of-ratios as primary (weights each year equally),
+    # fallback to single-year. Also flags if any individual year has CFO/PAT < 0.2
+    # (terrible cash conversion in one year, even if other years compensate).
+    flag_poor_cash = (
+        # 3yr average-of-ratios CFO/PAT < 0.7 (primary check)
+        ((~np.isnan(cfo_pat_3yr)) & (cfo_pat_3yr < 0.7) & (cfo_pat_3yr >= 0))
+        |
+        # Or single-year < 0.7 when 3yr not available
+        ((np.isnan(cfo_pat_3yr)) & (~np.isnan(cfo_pat)) & (cfo_pat < 0.7) & (cfo_pat >= 0))
+        |
+        # Any individual year with CFO/PAT < 0.2 (terrible single-year conversion)
+        ((~np.isnan(worst_yr_cfo_pat)) & (worst_yr_cfo_pat < 0.2) & (worst_yr_cfo_pat >= 0))
+    )
+
     flag_neg_cfo = (~np.isnan(cfo)) & (cfo < 0)
-    flag_inconsistent_cfo = (~np.isnan(cfo_3yr)) & (cfo_3yr < 0)
+
+    # INCONSISTENT_CFO: Flag if:
+    # 1. Cumulative 3yr CFO is negative, OR
+    # 2. Inferred Year 3 CFO is negative, OR
+    # 3. Fewer than 2 of 3 reconstructed years have positive CFO, OR
+    # 4. 5yr per-year avg CFO is less than 50% of 3yr per-year avg
+    #    (indicates much weaker/negative older years we can't see individually)
+    cfo_5yr_series = cashflow_df['CFO_5Yr_Cumulative'].values.astype(float)
+    avg_cfo_3yr = np.where(~np.isnan(cfo_3yr), cfo_3yr / 3.0, np.nan)
+    avg_cfo_5yr = np.where(~np.isnan(cfo_5yr_series), cfo_5yr_series / 5.0, np.nan)
+    cfo_5yr_vs_3yr_ratio = safe_div(avg_cfo_5yr, avg_cfo_3yr)
+
+    flag_inconsistent_cfo = (
+        ((~np.isnan(cfo_3yr)) & (cfo_3yr < 0))
+        |
+        ((~np.isnan(cfo_yr3)) & (cfo_yr3 < 0))
+        |
+        ((~np.isnan(pos_cfo_years)) & (pos_cfo_years < 2))
+        |
+        # 5yr per-year avg < 50% of 3yr per-year avg → weak older years
+        ((~np.isnan(cfo_5yr_vs_3yr_ratio)) & np.isfinite(cfo_5yr_vs_3yr_ratio)
+         & (avg_cfo_3yr > 0) & (cfo_5yr_vs_3yr_ratio < 0.5))
+    )
     flag_high_other = (~np.isnan(other_inc_pct)) & (other_inc_pct > 30)
     flag_margin_comp = (~np.isnan(opm)) & (~np.isnan(opm_py)) & (opm < opm_py - 2)
     flag_rising_debt = (~np.isnan(debt)) & (~np.isnan(debt_3yr)) & (debt_3yr > 0) & (debt > debt_3yr * 1.5)
@@ -834,6 +935,36 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         'FLAG_HIGH_PBV_ROE': flag_high_pbv_roe,
     }
 
+    # ── Sector-based severity adjustments (matching original script) ─────
+    # Capital-intensive businesses (Asset_Turnover < 0.8) get reduced severity
+    # on CFO-related flags because lumpy project-based cash flows are normal.
+    asset_turnover = quality_df['Asset_Turnover'].values.astype(float)
+    is_capital_intensive = (~np.isnan(asset_turnover)) & (asset_turnover < 0.8)
+
+    # Per-flag weight overrides: default to original weight, reduce for capital-intensive
+    # POOR_CASH_CONVERSION: CRITICAL(2.0) → MINOR(0.5) if capital-intensive
+    # NEGATIVE_CFO: CRITICAL(2.0) → MAJOR(1.0) if very capital-intensive (AT < 0.5)
+    # INCONSISTENT_CFO: CRITICAL(2.0) → MAJOR(1.0) if capital-intensive
+    weight_overrides = {}
+    weight_overrides['FLAG_POOR_CASH_CONVERSION'] = np.where(
+        is_capital_intensive & flag_poor_cash, 0.5, 2.0)
+    weight_overrides['FLAG_NEGATIVE_CFO'] = np.where(
+        (~np.isnan(asset_turnover)) & (asset_turnover < 0.5) & flag_neg_cfo, 1.0, 2.0)
+    weight_overrides['FLAG_INCONSISTENT_CFO'] = np.where(
+        is_capital_intensive & flag_inconsistent_cfo, 1.0, 2.0)
+
+    # Track sector adjustments for reporting
+    sector_adj_made = []
+    for i in range(n):
+        adjs = []
+        if is_capital_intensive[i] and flag_poor_cash[i]:
+            adjs.append("POOR_CASH_CONVERSION: CRITICAL→MINOR (Capital-intensive)")
+        if (~np.isnan(asset_turnover[i])) and asset_turnover[i] < 0.5 and flag_neg_cfo[i]:
+            adjs.append("NEGATIVE_CFO: CRITICAL→MAJOR (Very capital-intensive)")
+        if is_capital_intensive[i] and flag_inconsistent_cfo[i]:
+            adjs.append("INCONSISTENT_CFO: CRITICAL→MAJOR (Capital-intensive)")
+        sector_adj_made.append(' | '.join(adjs) if adjs else '')
+
     # Count flags by severity and compute Quality_Severity (structural only)
     # and Pricing_Severity (pricing only) — matching original script separation
     # Weights: CRITICAL=2.0, MAJOR=1.0, MINOR=0.5
@@ -851,19 +982,27 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         if key in RED_FLAG_DEFINITIONS:
             flag_name_to_def[fname] = RED_FLAG_DEFINITIONS[key]
 
-    # Structural flags → quality_severity
+    # Structural flags → quality_severity (with sector-based weight overrides)
     for fname, farr in structural_flags.items():
         total_count += farr.astype(int)
         defn = flag_name_to_def.get(fname, {})
-        sev = defn.get('severity', 'MINOR')
-        weight = defn.get('weight', 0.5)
-        quality_severity += farr.astype(float) * weight
-        if sev == 'CRITICAL':
-            critical_count += farr.astype(int)
-        elif sev == 'MAJOR':
-            major_count += farr.astype(int)
+        if fname in weight_overrides:
+            # Per-stock weight array (sector-adjusted for CFO flags)
+            weight = weight_overrides[fname]
+            is_flagged = farr.astype(bool)
+            critical_count += (is_flagged & (weight >= 2.0)).astype(int)
+            major_count += (is_flagged & (weight >= 1.0) & (weight < 2.0)).astype(int)
+            minor_count += (is_flagged & (weight < 1.0)).astype(int)
         else:
-            minor_count += farr.astype(int)
+            weight = defn.get('weight', 0.5)
+            sev = defn.get('severity', 'MINOR')
+            if sev == 'CRITICAL':
+                critical_count += farr.astype(int)
+            elif sev == 'MAJOR':
+                major_count += farr.astype(int)
+            else:
+                minor_count += farr.astype(int)
+        quality_severity += farr.astype(float) * weight
 
     # Pricing flags → pricing_severity
     for fname, farr in pricing_flags.items():
@@ -921,6 +1060,7 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         'Pricing_Flags': pricing_flag_names,
         'Red_Flags': all_flag_names,
         'Red_Flags_Explained': explained,
+        'Sector_Adjustments': sector_adj_made,
     }
 
     # Add individual flag columns
