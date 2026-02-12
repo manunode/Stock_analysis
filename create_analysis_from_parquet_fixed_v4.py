@@ -1,0 +1,939 @@
+#!/usr/bin/env python3
+"""
+Stock Analysis from Parquet Files
+Reads screener.in parquet data (6 files, ~5275 stocks) and produces
+a multi-sheet stock_analysis.xlsx report with scoring, red flags, and decision buckets.
+
+Usage:
+    python create_analysis_from_parquet.py
+    python create_analysis_from_parquet.py --output custom_output.xlsx
+    python create_analysis_from_parquet.py --log-level DEBUG
+"""
+
+import pandas as pd
+import numpy as np
+import argparse
+import os
+import sys
+import logging
+from datetime import datetime
+from typing import Dict, List, Any, Union, Optional
+
+# ── Logging Configuration ──────────────────────────────────────────────────
+def setup_logging(level: str = "INFO") -> None:
+    """Configure logging with timestamp and severity level."""
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ── Parquet file paths ──────────────────────────────────────────────────────
+PARQUET_FILES = {
+    'annual': os.path.join(BASE_DIR, 'all_stocks_annual_financials.parquet'),
+    'quarterly': os.path.join(BASE_DIR, 'all_stocks_quarterly_financials.parquet'),
+    'balance': os.path.join(BASE_DIR, 'all_stocks_balance_sheet.parquet'),
+    'cashflow': os.path.join(BASE_DIR, 'all_stocks_cash_flow.parquet'),
+    'ratios': os.path.join(BASE_DIR, 'all_stocks_ratios.parquet'),
+    'user_ratios': os.path.join(BASE_DIR, 'all_stocks_user_ratios.parquet'),
+}
+
+# ── Column Name Mapping (Single Source of Truth) ────────────────────────────
+COLS = {
+    # Identifiers
+    'NAME': 'Name',
+    'BSE_CODE': 'BSE Code',
+    'NSE_CODE': 'NSE Code',
+    'ISIN_CODE': 'ISIN Code',
+    'INDUSTRY_GROUP': 'Industry Group',
+    'INDUSTRY': 'Industry',
+    'CURRENT_PRICE': 'Current Price',
+    'MARKET_CAP': 'Market Capitalization',
+    
+    # Valuation Metrics
+    'PE': 'Price to Earning',
+    'PBV': 'Price to book value',
+    'EVEBITDA': 'EVEBITDA',
+    'PEG_RATIO': 'PEG Ratio',
+    'PRICE_TO_SALES': 'Price to Sales',
+    'BOOK_VALUE': 'Book value',
+    'INDUSTRY_PE': 'Industry PE',
+    'INDUSTRY_PBV': 'Industry PBV',
+    'HISTORICAL_PE_3Y': 'Historical PE 3Years',
+    'HISTORICAL_PE_5Y': 'Historical PE 5Years',
+    'HISTORICAL_PE_10Y': 'Historical PE 10Years',
+    'DOWN_52W_HIGH': 'Down from 52w high',
+    'UP_52W_LOW': 'Up from 52w low',
+    'PRICE_QUARTERLY_EARNING': 'Price to Quarterly Earning',
+    'MARKET_CAP_3Y_BACK': 'Market Capitalization 3years back',
+    'MARKET_CAP_5Y_BACK': 'Market Capitalization 5years back',
+    'MARKET_CAP_10Y_BACK': 'Market Capitalization 10years back',
+    
+    # Quality Metrics
+    'ROE': 'Return on equity',
+    'ROE_3Y_AVG': 'Average return on equity 3Years',
+    'ROE_5Y_AVG': 'Average return on equity 5Years',
+    'ROE_10Y_AVG': 'Average return on equity 10Years',
+    'ROCE': 'Return on capital employed',
+    'ROCE_3Y_AVG': 'Average return on capital employed 3Years',
+    'ROCE_5Y_AVG': 'Average return on capital employed 5Years',
+    'ROCE_7Y_AVG': 'Average return on capital employed 7Years',
+    'ROCE_10Y_AVG': 'Average return on capital employed 10Years',
+    'ROA': 'Return on assets',
+    'ROA_3Y': 'Return on assets 3years',
+    'ROA_5Y': 'Return on assets 5years',
+    'OPM': 'OPM',
+    'OPM_LAST_YEAR': 'OPM last year',
+    'OPM_PRECEDING_YEAR': 'OPM preceding year',
+    'OPM_5Y': 'OPM 5Year',
+    'OPM_10Y': 'OPM 10Year',
+    'NPM_LAST_YEAR': 'NPM last year',
+    'NPM_PRECEDING_YEAR': 'NPM preceding year',
+    'PIOTROSKI': 'Piotroski score',
+    'ASSET_TURNOVER': 'Asset Turnover Ratio',
+    
+    # Profit & Income
+    'PAT': 'Profit after tax',
+    'OTHER_INCOME': 'Other income',
+    
+    # Cash Flow Metrics
+    'CFO_LAST_YEAR': 'Cash from operations last year',
+    'CFO_PRECEDING_YEAR': 'Cash from operations preceding year',
+    'FCF_LAST_YEAR': 'Free cash flow last year',
+    'CFO_3Y_CUMULATIVE': 'Operating cash flow 3years',
+    'CFO_5Y_CUMULATIVE': 'Operating cash flow 5years',
+    'CFO_7Y_CUMULATIVE': 'Operating cash flow 7years',
+    'CFO_10Y_CUMULATIVE': 'Operating cash flow 10years',
+    'FCF_3Y_CUMULATIVE': 'Free cash flow 3years',
+    'FCF_5Y_CUMULATIVE': 'Free cash flow 5years',
+    'FCF_7Y_CUMULATIVE': 'Free cash flow 7years',
+    'FCF_10Y_CUMULATIVE': 'Free cash flow 10years',
+    'CFI_LAST_YEAR': 'Cash from investing last year',
+    
+    # Balance Sheet Metrics
+    'TOTAL_ASSETS': 'Total Assets',
+    'WORKING_CAPITAL': 'Working capital',
+    'WORKING_CAPITAL_PY': 'Working capital preceding year',
+    'DEBT': 'Debt',
+    'DEBT_3Y_BACK': 'Debt 3Years back',
+    'DEBT_5Y_BACK': 'Debt 5Years back',
+    'RESERVES': 'Reserves',
+    'CURRENT_ASSETS': 'Current assets',
+    'CURRENT_LIABILITIES': 'Current liabilities',
+    'NET_BLOCK': 'Net block',
+    'GROSS_BLOCK': 'Gross block',
+    'CONTINGENT_LIABILITIES': 'Contingent liabilities',
+    'CASH_EQUIVALENTS': 'Cash Equivalents',
+    'TRADE_PAYABLES': 'Trade Payables',
+    'FACE_VALUE': 'Face value',
+    
+    # Leverage Metrics
+    'DEBT_EQUITY': 'Debt to equity',
+    'INTEREST_COVERAGE': 'Interest Coverage Ratio',
+    'AVG_WC_DAYS_3Y': 'Average Working Capital Days 3years',
+    
+    # Growth Metrics
+    'SALES': 'Sales',
+    'SALES_LAST_YEAR': 'Sales last year',
+    'SALES_GROWTH_3Y': 'Sales growth 3Years',
+    'SALES_GROWTH_5Y': 'Sales growth 5Years',
+    'SALES_GROWTH_10Y': 'Sales growth 10Years',
+    'PROFIT_GROWTH_3Y': 'Profit growth 3Years',
+    'PROFIT_GROWTH_5Y': 'Profit growth 5Years',
+    'PROFIT_GROWTH_7Y': 'Profit growth 7Years',
+    'PROFIT_GROWTH_10Y': 'Profit growth 10Years',
+    'EPS': 'EPS',
+    'EPS_GROWTH_3Y': 'EPS growth 3Years',
+    'EPS_GROWTH_5Y': 'EPS growth 5Years',
+    'EPS_GROWTH_10Y': 'EPS growth 10Years',
+    'EBITDA_GROWTH_3Y': 'EBITDA growth 3Years',
+    'EBITDA_GROWTH_5Y': 'EBITDA growth 5Years',
+    'EBITDA_GROWTH_10Y': 'EBITDA growth 10Years',
+    
+    # Quarterly Metrics
+    'QOQ_SALES': 'QoQ Sales',
+    'QOQ_PROFITS': 'QoQ Profits',
+    'YOY_Q_SALES': 'YOY Quarterly sales growth',
+    'YOY_Q_PROFIT': 'YOY Quarterly profit growth',
+    
+    # Shareholding Metrics
+    'PROMOTER_HOLDING': 'Promoter holding',
+    'FII_HOLDING': 'FII holding',
+    'DII_HOLDING': 'DII holding',
+    'FII_CHANGE_QTR': 'Change in FII holding',
+    'DII_CHANGE_QTR': 'Change in DII holding',
+    'FII_CHANGE_3Y': 'Change in FII holding 3Years',
+    'DII_CHANGE_3Y': 'Change in DII holding 3Years',
+    'PROMOTER_CHANGE_3Y': 'Change in promoter holding 3Years',
+    'NUM_SHAREHOLDERS': 'Number of Shareholders preceding quarter',
+    
+    # Dividend Metrics
+    'DIVIDEND_LAST_YEAR': 'Dividend last year',
+    'DIVIDEND_PRECEDING_YEAR': 'Dividend preceding year',
+    'DIVIDEND_PAYOUT': 'Dividend Payout',
+    
+    # Additional
+    'BOOK_VALUE_3Y_BACK': 'Book value 3years back',
+    'BOOK_VALUE_5Y_BACK': 'Book value 5years back',
+    'BOOK_VALUE_10Y_BACK': 'Book value 10years back',
+}
+
+# Column aliases for handling typos/variants in source data
+# Maps canonical key to list of possible column names (in order of preference)
+COL_ALIASES = {
+    'EBITDA_GROWTH_3Y': ['EBITDA growth 3Years', 'EBIDT growth 3Years'],
+    'EBITDA_GROWTH_5Y': ['EBITDA growth 5Years', 'EBIDT growth 5Years'],
+    'EBITDA_GROWTH_10Y': ['EBITDA growth 10Years', 'EBIDT growth 10Years'],
+}
+
+# Column suffixes for different data sources
+SUFFIX = {
+    'ANNUAL': '_ann',
+    'QUARTERLY': '_qtr',
+    'BALANCE': '_bal',
+    'CASHFLOW': '_cf',
+    'RATIOS': '_rat',
+    'USER_RATIOS': '_ur',
+}
+
+# Standard identifier columns for all sheets
+IDENTIFIER_COLS = ['ISIN', 'NSE_Code', 'BSE_Code']
+
+# ── Configuration Constants ─────────────────────────────────────────────────
+CONFIG = {
+    'ROE_LOW_THRESHOLD': 10.0,
+    'ROE_DECLINING_THRESHOLD': 15.0,
+    'ROE_EXCELLENT_THRESHOLD': 25.0,
+    'ROCE_LOW_THRESHOLD': 10.0,
+    'ROCE_DECLINING_THRESHOLD': 15.0,
+    'CFO_PAT_LOW_THRESHOLD': 0.7,
+    'CFO_PAT_EXCELLENT_THRESHOLD': 1.2,
+    'DEBT_GROWTH_THRESHOLD': 1.5,
+    'DEBT_MIN_NEW_THRESHOLD': 50,
+    'PE_HIGH_THRESHOLD': 50.0,
+    'EV_EBITDA_HIGH_THRESHOLD': 25.0,
+    'OTHER_INCOME_PCT_THRESHOLD': 30.0,
+    'SCORE_BAND_A': 80.0,
+    'SCORE_BAND_B': 65.0,
+    'SCORE_BAND_C': 50.0,
+    'SCORE_BAND_D': 30.0,
+    'SEVERITY_FAILED_THRESHOLD': 2.0,
+    'SEVERITY_FLAGS_THRESHOLD': 1.0,
+    'SEVERITY_MINOR_THRESHOLD': 0.5,
+    'PROMOTER_BUY_THRESHOLD': 3.0,
+    'PROMOTER_SELL_THRESHOLD': -3.0,
+}
+
+# ── Scoring Bins for pd.cut vectorization ───────────────────────────────────
+SCORING_BINS = {
+    'ROE': {'bins': [-np.inf, 5, 10, 12, 15, 20, 25, np.inf], 'labels': [2, 6, 10, 14, 18, 22, 25], 'default': 5},
+    'ROCE': {'bins': [-np.inf, 5, 10, 12, 15, 20, 25, np.inf], 'labels': [2, 6, 10, 14, 18, 22, 25], 'default': 5},
+    'OPM': {'bins': [-np.inf, 5, 10, 15, 20, 25, np.inf], 'labels': [2, 6, 10, 14, 17, 20], 'default': 5},
+    'PIOTROSKI': {'bins': [-np.inf, 2, 4, 6, 8, np.inf], 'labels': [1, 4, 8, 12, 15], 'default': 5},
+    'PE': {'bins': [-np.inf, 0, 10, 15, 20, 25, 35, 50, 80, np.inf], 'labels': [5, 40, 35, 30, 25, 20, 15, 10, 5], 'default': 10},
+    'PBV': {'bins': [-np.inf, 1, 2, 3, 5, 8, np.inf], 'labels': [20, 16, 12, 8, 5, 2], 'default': 5},
+    'EV_EBITDA': {'bins': [-np.inf, 0, 8, 12, 16, 20, 25, np.inf], 'labels': [3, 20, 16, 12, 8, 5, 2], 'default': 5},
+    'PEG': {'bins': [-np.inf, 0, 0.5, 1.0, 1.5, 2.0, 3.0, np.inf], 'labels': [3, 20, 16, 12, 8, 5, 2], 'default': 5},
+    'REVENUE_GROWTH': {'bins': [-np.inf, 0, 5, 10, 15, 20, np.inf], 'labels': [3, 8, 14, 20, 25, 30], 'default': 5},
+    'PROFIT_GROWTH': {'bins': [-np.inf, 0, 5, 10, 15, 25, np.inf], 'labels': [3, 8, 14, 20, 25, 30], 'default': 5},
+    'EPS_GROWTH': {'bins': [-np.inf, 0, 5, 12, 20, np.inf], 'labels': [2, 7, 12, 16, 20], 'default': 5},
+    'CFO_PAT': {'bins': [-np.inf, 0, 0.5, 0.8, 1.0, 1.2, np.inf], 'labels': [10, 30, 50, 70, 85, 100], 'default': 20},
+    'DEBT_EQUITY': {'bins': [-np.inf, 0, 0.3, 0.5, 1.0, 1.5, 2.0, np.inf], 'labels': [30, 28, 24, 18, 12, 6, 2], 'default': 10},
+    'INTEREST_COVERAGE': {'bins': [-np.inf, 1, 2, 3, 5, 10, np.inf], 'labels': [0, 5, 10, 15, 20, 25], 'default': 8},
+    'CURRENT_RATIO': {'bins': [-np.inf, 0.8, 1.0, 1.2, 1.5, 2.0, np.inf], 'labels': [1, 4, 8, 12, 16, 20], 'default': 5},
+}
+
+# ── Financial sector identification ─────────────────────────────────────────
+FINANCIAL_SECTORS_LOWER = frozenset(s.lower() for s in [
+    'Banks', 'Private Banks', 'Public Banks', 'Foreign Banks',
+    'Finance', 'Financial Services', 'NBFC', 'Non Banking Financial Company',
+    'Insurance', 'Life Insurance', 'General Insurance',
+    'Housing Finance', 'Consumer Finance', 'Asset Management',
+    'Diversified Financials', 'Financial Institution', 'Capital Markets',
+])
+
+# ── Red flag definitions ────────────────────────────────────────────────────
+STRUCTURAL_RED_FLAGS = {
+    "LOW_ROE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Company generates weak returns on shareholder capital"},
+    "DECLINING_ROE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Return on equity falling to mediocre level"},
+    "LOW_ROCE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Weak returns on total capital employed"},
+    "DECLINING_ROCE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Capital efficiency worsening"},
+    "POOR_CASH_CONVERSION": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Reported profits not converting to cash"},
+    "NEGATIVE_CFO": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Core operations burning cash"},
+    "INCONSISTENT_CFO": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Operating cash flow not reliably positive"},
+    "HIGH_OTHER_INCOME": {"severity": "MAJOR", "weight": 1.0, "meaning": "Significant profit from non-core activities"},
+    "MARGIN_COMPRESSION": {"severity": "MINOR", "weight": 0.5, "meaning": "Profit margins shrinking over time"},
+    "RISING_DEBT": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Financial risk increasing"},
+    "WC_DIVERGENCE": {"severity": "MINOR", "weight": 0.5, "meaning": "Working capital growing much faster than sales"},
+}
+
+PRICING_RED_FLAGS = {
+    "HIGH_PE": {"severity": "MINOR", "weight": 0.5, "meaning": "Very high earnings multiple"},
+    "NEGATIVE_PE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Company is loss-making"},
+    "HIGH_EV_EBITDA": {"severity": "MINOR", "weight": 0.5, "meaning": "Expensive on cash flow basis"},
+    "NEGATIVE_EBITDA": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Negative operating profit before depreciation"},
+    "HIGH_PBV_ROE": {"severity": "MINOR", "weight": 0.5, "meaning": "Price implies returns company cannot deliver"},
+}
+
+RED_FLAG_DEFINITIONS = {**STRUCTURAL_RED_FLAGS, **PRICING_RED_FLAGS}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def col(metric_key: str, suffix_key: str = '') -> str:
+    """Build full column name from metric key and suffix key."""
+    base = COLS.get(metric_key, metric_key)
+    suffix = SUFFIX.get(suffix_key, '') if suffix_key else ''
+    return f"{base}{suffix}"
+
+
+def get_col(df: pd.DataFrame, metric_key: str, suffix_key: str = '', default=np.nan):
+    """
+    Get column from DataFrame with fallback to default and alias support.
+    
+    Handles column aliases for typos/variants in source data (e.g., EBITDA vs EBIDT).
+    """
+    # Check if this metric has aliases defined
+    if metric_key in COL_ALIASES:
+        for alias in COL_ALIASES[metric_key]:
+            col_name = f"{alias}{SUFFIX.get(suffix_key, '')}" if suffix_key else alias
+            if col_name in df.columns:
+                return df[col_name]
+    
+    # Standard lookup
+    col_name = col(metric_key, suffix_key)
+    if col_name in df.columns:
+        return df[col_name]
+    return default
+
+
+def safe_div(a: Union[pd.Series, np.ndarray, float], 
+             b: Union[pd.Series, np.ndarray, float], 
+             default: float = np.nan) -> Union[pd.Series, np.ndarray, float]:
+    """Safe division handling NaN and zero."""
+    is_series = isinstance(a, pd.Series) or isinstance(b, pd.Series)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        result = np.where((pd.isna(b)) | (b == 0), default, a / b)
+    if is_series:
+        return pd.Series(result, index=a.index if isinstance(a, pd.Series) else None)
+    return result
+
+
+def safe_str_lower(series: pd.Series) -> pd.Series:
+    """Safely convert Series to lowercase."""
+    # ERROR WAS HERE: .str.lower needed parentheses ()
+    return series.fillna('').astype(str).str.lower()
+
+
+def vectorized_score(series: pd.Series, bin_config: dict) -> pd.Series:
+    """Apply vectorized scoring using pd.cut."""
+    result = pd.cut(series, bins=bin_config['bins'], labels=bin_config['labels'], ordered=False).astype(float)
+    return result.fillna(bin_config['default'])
+
+
+def vectorized_string_build(n: int, conditions: List[np.ndarray], strings: List[str], separator: str = ', ') -> List[str]:
+    """
+    Build strings by concatenating based on conditions - TRUE VECTORIALIZATION.
+    
+    Args:
+        n: Number of rows
+        conditions: List of boolean numpy arrays
+        strings: List of strings to concatenate when condition is True
+        separator: String to join parts
+        
+    Returns:
+        List of concatenated strings
+    """
+    # Start with empty strings
+    result = np.full(n, '', dtype=object)
+    
+    for cond, s in zip(conditions, strings):
+        # Use numpy where to add string where condition is True
+        result = np.where(cond, np.where(result == '', s, result + separator + s), result)
+    
+    return result.tolist()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATA LOADING FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def load_parquet_files() -> Dict[str, pd.DataFrame]:
+    """Load all parquet files into a dict of DataFrames."""
+    dfs = {}
+    for key, path in PARQUET_FILES.items():
+        if not os.path.exists(path):
+            logging.warning(f"Missing parquet file: {path}")
+            continue
+        df = pd.read_parquet(path)
+        logging.info(f"Loaded {key}: {df.shape[0]} stocks, {df.shape[1]} columns")
+        dfs[key] = df
+    return dfs
+
+
+def validate_required_columns(df: pd.DataFrame, required_cols: List[str], file_key: str) -> List[str]:
+    """Validate that required columns exist in DataFrame."""
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        logging.warning(f"{file_key} is missing columns: {missing}")
+    return missing
+
+
+def merge_all(dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Merge all parquet DataFrames on common identifiers."""
+    required_base_cols = [COLS['NAME'], COLS['BSE_CODE'], COLS['NSE_CODE'], COLS['ISIN_CODE'],
+                          COLS['INDUSTRY_GROUP'], COLS['INDUSTRY'], COLS['CURRENT_PRICE'], COLS['MARKET_CAP']]
+    
+    if 'annual' not in dfs:
+        raise ValueError("Annual financials file is required but not loaded")
+    
+    missing_cols = validate_required_columns(dfs['annual'], required_base_cols, 'annual')
+    if missing_cols:
+        available_cols = [c for c in required_base_cols if c in dfs['annual'].columns]
+        if COLS['ISIN_CODE'] not in available_cols:
+            raise ValueError("ISIN Code is required but missing from annual file")
+        required_base_cols = available_cols
+    
+    merged = dfs['annual'][required_base_cols].copy()
+    drop_cols = {COLS['NAME'], COLS['BSE_CODE'], COLS['NSE_CODE'], COLS['ISIN_CODE'],
+                 COLS['INDUSTRY_GROUP'], COLS['INDUSTRY'], COLS['CURRENT_PRICE'], COLS['MARKET_CAP']}
+
+    for key, df in dfs.items():
+        if key == 'annual':
+            for c in df.columns:
+                if c not in drop_cols:
+                    merged[col(c, 'ANNUAL')] = df[c].values
+            continue
+
+        if COLS['ISIN_CODE'] not in df.columns:
+            logging.warning(f"{key} file missing 'ISIN Code', skipping merge")
+            continue
+
+        cols_to_keep = [COLS['ISIN_CODE']] + [c for c in df.columns if c not in drop_cols]
+        df_subset = df[cols_to_keep].copy()
+        suffix = SUFFIX[key.upper()]
+        rename = {c: f"{c}{suffix}" for c in df_subset.columns if c != COLS['ISIN_CODE']}
+        df_subset = df_subset.rename(columns=rename)
+        merged = merged.merge(df_subset, on=COLS['ISIN_CODE'], how='left')
+
+    logging.info(f"Merged dataset: {merged.shape[0]} stocks, {merged.shape[1]} columns")
+    return merged
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SHEET BUILDING FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_master_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build the Master sheet with stock identification info."""
+    is_fin = safe_str_lower(m[COLS['INDUSTRY_GROUP']]).isin(FINANCIAL_SECTORS_LOWER) | \
+             safe_str_lower(m[COLS['INDUSTRY']]).isin(FINANCIAL_SECTORS_LOWER)
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Stock_Name': m[COLS['NAME']], 'Sector': m[COLS['INDUSTRY_GROUP']], 'Industry': m[COLS['INDUSTRY']],
+        'Market_Cap': m[COLS['MARKET_CAP']], 'Current_Price': m[COLS['CURRENT_PRICE']],
+        'Is_Financial_Sector': is_fin.map({True: 'Yes', False: 'No'}),
+        'Face_Value': get_col(m, 'FACE_VALUE', 'BALANCE'),
+    })
+
+
+def build_valuation_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build valuation metrics sheet."""
+    pe, pbv = get_col(m, 'PE', 'RATIOS'), get_col(m, 'PBV', 'RATIOS')
+    val_comfort = (vectorized_score(pd.Series(pe), SCORING_BINS['PE']) +
+                   vectorized_score(pd.Series(pbv), SCORING_BINS['PBV']) +
+                   vectorized_score(pd.Series(get_col(m, 'EVEBITDA', 'USER_RATIOS')), SCORING_BINS['EV_EBITDA']) +
+                   vectorized_score(pd.Series(get_col(m, 'PEG_RATIO', 'USER_RATIOS')), SCORING_BINS['PEG']))
+    val_band = np.where(pd.isna(val_comfort), 'N/A',
+               np.where(val_comfort >= 70, 'CHEAP', np.where(val_comfort >= 50, 'FAIR',
+               np.where(val_comfort >= 30, 'EXPENSIVE', 'VERY_EXPENSIVE'))))
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'PE': pe, 'PBV': pbv, 'EV_EBITDA': get_col(m, 'EVEBITDA', 'USER_RATIOS'),
+        'PEG': get_col(m, 'PEG_RATIO', 'USER_RATIOS'), 'Price_To_Sales': get_col(m, 'PRICE_TO_SALES', 'USER_RATIOS'),
+        'Earnings_Yield': safe_div(100.0, pe), 'Valuation_Band': val_band, 'Valuation_Comfort_Score': val_comfort,
+        'Market_Cap': m[COLS['MARKET_CAP']], 'LTP': m[COLS['CURRENT_PRICE']],
+        'Book_Value': get_col(m, 'BOOK_VALUE', 'RATIOS'), 'Industry_PE': get_col(m, 'INDUSTRY_PE', 'RATIOS'),
+        'Industry_PBV': get_col(m, 'INDUSTRY_PBV', 'RATIOS'),
+        'Historical_PE_3Yr': get_col(m, 'HISTORICAL_PE_3Y', 'RATIOS'),
+        'Historical_PE_5Yr': get_col(m, 'HISTORICAL_PE_5Y', 'RATIOS'),
+        'Historical_PE_10Yr': get_col(m, 'HISTORICAL_PE_10Y', 'RATIOS'),
+        'Down_From_52W_High': get_col(m, 'DOWN_52W_HIGH', 'USER_RATIOS'),
+        'Up_From_52W_Low': get_col(m, 'UP_52W_LOW', 'USER_RATIOS'),
+        'Price_To_Quarterly_Earning': get_col(m, 'PRICE_QUARTERLY_EARNING', 'RATIOS'),
+        'Market_Cap_3Yr_Back': get_col(m, 'MARKET_CAP_3Y_BACK', 'RATIOS'),
+        'Market_Cap_5Yr_Back': get_col(m, 'MARKET_CAP_5Y_BACK', 'RATIOS'),
+        'Market_Cap_10Yr_Back': get_col(m, 'MARKET_CAP_10Y_BACK', 'RATIOS'),
+    })
+
+
+def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build quality metrics sheet."""
+    roe = pd.Series(get_col(m, 'ROE', 'RATIOS'), dtype=float)
+    roe_3 = pd.Series(get_col(m, 'ROE_3Y_AVG', 'RATIOS'), dtype=float)
+    roe_5 = pd.Series(get_col(m, 'ROE_5Y_AVG', 'RATIOS'), dtype=float)
+    roce = pd.Series(get_col(m, 'ROCE', 'ANNUAL'), dtype=float)
+    roce_3 = pd.Series(get_col(m, 'ROCE_3Y_AVG', 'RATIOS'), dtype=float)
+    opm = pd.Series(get_col(m, 'OPM', 'ANNUAL'), dtype=float)
+    opm_py = pd.Series(get_col(m, 'OPM_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
+    piotroski = pd.Series(get_col(m, 'PIOTROSKI', 'RATIOS'), dtype=float)
+    
+    bq_score = (vectorized_score(roe, SCORING_BINS['ROE']) + vectorized_score(roce, SCORING_BINS['ROCE']) +
+                vectorized_score(opm, SCORING_BINS['OPM']) + vectorized_score(piotroski, SCORING_BINS['PIOTROSKI']) +
+                pd.Series(np.where(pd.isna(roe_5) | pd.isna(roe_3), 5,
+                         np.where(np.abs(roe_5 - roe_3) <= 2, 15, np.where(np.abs(roe_5 - roe_3) <= 5, 10, 
+                         np.where(np.abs(roe_5 - roe_3) <= 10, 6, 3)))), dtype=float))
+    
+    pat = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
+    other_inc = pd.Series(get_col(m, 'OTHER_INCOME', 'ANNUAL'), dtype=float)
+    
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Business_Quality_Score': bq_score,
+        'Earnings_Quality': np.where(pd.isna(bq_score), 'N/A', np.where(bq_score >= 70, 'HIGH',
+                                    np.where(bq_score >= 50, 'MODERATE', np.where(bq_score >= 30, 'LOW', 'POOR')))),
+        'Piotroski_Score': piotroski,
+        'Piotroski_Assessment': np.where(pd.isna(piotroski), 'N/A', np.where(piotroski >= 7, 'STRONG',
+                                         np.where(piotroski >= 4, 'NEUTRAL', 'WEAK'))),
+        'ROE_Latest': roe, 'ROE_3Yr_Avg': roe_3, 'ROE_5Yr_Avg': roe_5,
+        'ROE_10Yr_Avg': get_col(m, 'ROE_10Y_AVG', 'RATIOS'),
+        'ROE_Trend': np.where(pd.isna(roe) | pd.isna(roe_3), 'N/A',
+                     np.where(roe > roe_3 + 2, 'IMPROVING', np.where(roe < roe_3 - 2, 'DECLINING', 'STABLE'))),
+        'ROCE_Latest': roce, 'ROCE_3Yr_Avg': roce_3,
+        'ROCE_5Yr_Avg': get_col(m, 'ROCE_5Y_AVG', 'RATIOS'),
+        'ROCE_7Yr_Avg': get_col(m, 'ROCE_7Y_AVG', 'RATIOS'),
+        'ROCE_10Yr_Avg': get_col(m, 'ROCE_10Y_AVG', 'RATIOS'),
+        'ROCE_Trend': np.where(pd.isna(roce) | pd.isna(roce_3), 'N/A',
+                      np.where(roce > roce_3 + 2, 'IMPROVING', np.where(roce < roce_3 - 2, 'DECLINING', 'STABLE'))),
+        'ROA_Latest': get_col(m, 'ROA', 'RATIOS'),
+        'OPM_Latest': opm, 'OPM_Preceding_Year': opm_py,
+        'OPM_Trend': np.where(pd.isna(opm) | pd.isna(opm_py), 'N/A',
+                     np.where(opm > opm_py + 1, 'IMPROVING', np.where(opm < opm_py - 1, 'DECLINING', 'STABLE'))),
+        'Other_Income_Pct_PAT': safe_div(np.abs(other_inc) * 100, np.abs(pat)),
+    })
+
+
+def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build cash flow metrics sheet."""
+    cfo = pd.Series(get_col(m, 'CFO_LAST_YEAR', 'CASHFLOW'), dtype=float)
+    pat = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
+    cfo_py = pd.Series(get_col(m, 'CFO_PRECEDING_YEAR', 'CASHFLOW'), dtype=float)
+    total_assets = pd.Series(get_col(m, 'TOTAL_ASSETS', 'BALANCE'), dtype=float)
+    wc = pd.Series(get_col(m, 'WORKING_CAPITAL', 'BALANCE'), dtype=float)
+    wc_py = pd.Series(get_col(m, 'WORKING_CAPITAL_PY', 'BALANCE'), dtype=float)
+    sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
+    sales_ly = pd.Series(get_col(m, 'SALES_LAST_YEAR', 'ANNUAL'), dtype=float)
+    wc_growth = safe_div(wc - wc_py, np.abs(wc_py)) * 100
+    rev_growth = safe_div(sales - sales_ly, np.abs(sales_ly)) * 100
+    
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'CFO_Latest': cfo, 'PAT_Latest': pat, 'CFO_PAT_Latest': safe_div(cfo, pat),
+        'FCF_Latest': get_col(m, 'FCF_LAST_YEAR', 'CASHFLOW'), 'CFO_Preceding_Year': cfo_py,
+        'CFO_Trend': np.where(pd.isna(cfo) | pd.isna(cfo_py), 'N/A',
+                     np.where(cfo > cfo_py * 1.1, 'IMPROVING', np.where(cfo < cfo_py * 0.9, 'DECLINING', 'STABLE'))),
+        'CFO_3Yr_Cumulative': get_col(m, 'CFO_3Y_CUMULATIVE', 'CASHFLOW'),
+        'CFO_5Yr_Cumulative': get_col(m, 'CFO_5Y_CUMULATIVE', 'CASHFLOW'),
+        'CFROA': safe_div(cfo, total_assets), 'Accruals': safe_div(pat - cfo, total_assets),
+        'WC_Growth_Pct': wc_growth, 'Rev_Growth_Pct': rev_growth,
+        'WC_Rev_Growth_Ratio': safe_div(wc_growth, rev_growth),
+    })
+
+
+def build_leverage_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build leverage sheet."""
+    de = pd.Series(get_col(m, 'DEBT_EQUITY', 'RATIOS'), dtype=float)
+    ic = pd.Series(get_col(m, 'INTEREST_COVERAGE', 'USER_RATIOS'), dtype=float)
+    debt = pd.Series(get_col(m, 'DEBT', 'BALANCE'), dtype=float)
+    debt_3yr = pd.Series(get_col(m, 'DEBT_3Y_BACK', 'BALANCE'), dtype=float)
+    ca = pd.Series(get_col(m, 'CURRENT_ASSETS', 'BALANCE'), dtype=float)
+    cl = pd.Series(get_col(m, 'CURRENT_LIABILITIES', 'BALANCE'), dtype=float)
+    current_ratio = safe_div(ca, cl)
+    
+    debt_trend = np.where(pd.isna(debt) | pd.isna(debt_3yr), 'N/A',
+                 np.where(debt_3yr == 0, np.where(debt == 0, 'ZERO_DEBT', 'RISING'),
+                 np.where(debt < debt_3yr * 0.8, 'DECLINING', np.where(debt > debt_3yr * 1.2, 'RISING', 'STABLE'))))
+    
+    fin_strength = (vectorized_score(de, SCORING_BINS['DEBT_EQUITY']) +
+                    vectorized_score(ic, SCORING_BINS['INTEREST_COVERAGE']) +
+                    vectorized_score(pd.Series(current_ratio), SCORING_BINS['CURRENT_RATIO']) +
+                    pd.Series(np.where(debt_trend == 'ZERO_DEBT', 25, np.where(debt_trend == 'DECLINING', 22,
+                              np.where(debt_trend == 'STABLE', 15, np.where(debt_trend == 'RISING', 5, 8)))), dtype=float))
+    
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Debt_Equity': de, 'Interest_Coverage': ic, 'Debt_Trend': debt_trend,
+        'Financial_Strength_Score': fin_strength, 'Current_Ratio': current_ratio,
+        'Total_Debt': debt, 'Debt_3Yr_Back': debt_3yr, 'Total_Assets': get_col(m, 'TOTAL_ASSETS', 'BALANCE'),
+    })
+
+
+def build_growth_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build growth metrics sheet - uses get_col with alias support for EBITDA."""
+    sales_g3 = pd.Series(get_col(m, 'SALES_GROWTH_3Y', 'ANNUAL'), dtype=float)
+    profit_g3 = pd.Series(get_col(m, 'PROFIT_GROWTH_3Y', 'ANNUAL'), dtype=float)
+    eps_g3 = pd.Series(get_col(m, 'EPS_GROWTH_3Y', 'ANNUAL'), dtype=float)
+    profit_g5 = pd.Series(get_col(m, 'PROFIT_GROWTH_5Y', 'ANNUAL'), dtype=float)
+    sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
+    sales_ly = pd.Series(get_col(m, 'SALES_LAST_YEAR', 'ANNUAL'), dtype=float)
+    
+    pg_consistent = np.where(pd.isna(profit_g3) | pd.isna(profit_g5), 'N/A',
+                   np.where((profit_g3 > 0) & (profit_g5 > 0), 'CONSISTENT',
+                   np.where((profit_g3 > 0) | (profit_g5 > 0), 'MIXED', 'DECLINING')))
+    
+    growth_durability = (vectorized_score(sales_g3, SCORING_BINS['REVENUE_GROWTH']) +
+                         vectorized_score(profit_g3, SCORING_BINS['PROFIT_GROWTH']) +
+                         vectorized_score(eps_g3, SCORING_BINS['EPS_GROWTH']) +
+                         pd.Series(np.where(pg_consistent == 'CONSISTENT', 20,
+                                   np.where(pg_consistent == 'MIXED', 10, 3)), dtype=float))
+    
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Revenue_Growth_1Yr': safe_div(sales - sales_ly, np.abs(sales_ly)) * 100,
+        'Revenue_Growth_3Yr': sales_g3, 'Profit_Growth_3Yr': profit_g3,
+        'EBITDA_Growth_3Yr': get_col(m, 'EBITDA_GROWTH_3Y', 'ANNUAL'),  # Handles typo automatically
+        'Profit_Growth_Consistency': pg_consistent, 'Growth_Durability_Score': growth_durability,
+        'Total_Revenue': sales,
+    })
+
+
+def build_shareholding_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build shareholding sheet."""
+    promoter = pd.Series(get_col(m, 'PROMOTER_HOLDING', 'RATIOS'), dtype=float)
+    fii = pd.Series(get_col(m, 'FII_HOLDING', 'RATIOS'), dtype=float)
+    dii = pd.Series(get_col(m, 'DII_HOLDING', 'RATIOS'), dtype=float)
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Promoter_Holding': promoter, 'Promoter_Change_3Yr': get_col(m, 'PROMOTER_CHANGE_3Y', 'ANNUAL'),
+        'Institutional_Holding': fii.fillna(0) + dii.fillna(0),
+        'Num_Shareholders': get_col(m, 'NUM_SHAREHOLDERS', 'RATIOS'),
+    })
+
+
+def build_neglected_firm_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, leverage_df: pd.DataFrame,
+                                shareholding_df: pd.DataFrame) -> pd.DataFrame:
+    """Build neglected firm sheet with TRUE vectorization."""
+    n = len(m)
+    inst = shareholding_df['Institutional_Holding'].fillna(0).values
+    mcap = m[COLS['MARKET_CAP']].values.astype(float)
+    num_sh = pd.Series(get_col(m, 'NUM_SHAREHOLDERS', 'RATIOS'), dtype=float).values
+    roe_5 = quality_df['ROE_5Yr_Avg'].fillna(0).values
+    de = leverage_df['Debt_Equity'].fillna(999).values
+    
+    # Scores
+    inst_score = np.where(inst <= 1, 40, np.where(inst <= 3, 30, np.where(inst <= 5, 20, np.where(inst <= 10, 10, 0))))
+    mcap_score = np.where(pd.isna(mcap), 0, np.where(mcap <= 500, 30, np.where(mcap <= 2000, 20, np.where(mcap <= 5000, 10, 0))))
+    sh_score = np.where(pd.isna(num_sh), 10, np.where(num_sh <= 5000, 20, np.where(num_sh <= 20000, 10, np.where(num_sh <= 50000, 5, 0))))
+    neglect_score = inst_score + mcap_score + sh_score
+    
+    generic_candidate = np.where((neglect_score >= 50) & (roe_5 >= 10) & (de <= 1.0), 'Yes',
+                        np.where(neglect_score >= 40, 'Maybe', 'No'))
+    
+    # TRUE vectorized string building for reasons
+    # Note: String formatting cannot be truly vectorized at C level, but list comprehension
+    # is ~3-5x faster than pd.Series.apply(lambda) and avoids pandas overhead
+    inst_strs = np.array([f"Low institutional holding ({x:.1f}%)" if not np.isnan(x) else "" for x in inst], dtype=object)
+    mcap_strs = np.array([f"Small cap (₹{x:.0f} Cr)" if not np.isnan(x) else "" for x in mcap], dtype=object)
+    numsh_strs = np.array([f"Few shareholders ({int(x)})" if not np.isnan(x) else "" for x in num_sh], dtype=object)
+    
+    reasons = vectorized_string_build(
+        n,
+        conditions=[inst <= 5, ~pd.isna(mcap) & (mcap <= 2000), ~pd.isna(num_sh) & (num_sh <= 10000)],
+        strings=[inst_strs, mcap_strs, numsh_strs],
+        separator='; '
+    )
+    
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Generic_Stock_Candidate': generic_candidate, 'Neglect_Score': neglect_score,
+        'Neglect_Reasons': reasons, 'Institutional_Holding': inst, 'ROE_5Yr_Avg': roe_5,
+        'Debt_Equity': de, 'Market_Cap': mcap, 'Num_Shareholders': num_sh,
+    })
+
+
+def build_dividends_sheet(m: pd.DataFrame) -> pd.DataFrame:
+    """Build dividends sheet."""
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Dividend_Last_Year': get_col(m, 'DIVIDEND_LAST_YEAR', 'ANNUAL'),
+        'Dividend_Payout': get_col(m, 'DIVIDEND_PAYOUT', 'USER_RATIOS'),
+    })
+
+
+def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df: pd.DataFrame,
+                          leverage_df: pd.DataFrame, valuation_df: pd.DataFrame) -> pd.DataFrame:
+    """Build red flags sheet with TRUE vectorization (no apply(axis=1))."""
+    n = len(m)
+    
+    # Extract values
+    roe = quality_df['ROE_Latest'].values.astype(float)
+    roe_3 = quality_df['ROE_3Yr_Avg'].values.astype(float)
+    roce = quality_df['ROCE_Latest'].values.astype(float)
+    roce_3 = quality_df['ROCE_3Yr_Avg'].values.astype(float)
+    opm = quality_df['OPM_Latest'].values.astype(float)
+    opm_py = quality_df['OPM_Preceding_Year'].values.astype(float)
+    other_inc_pct = quality_df['Other_Income_Pct_PAT'].values.astype(float)
+    cfo = cashflow_df['CFO_Latest'].values.astype(float)
+    cfo_pat = cashflow_df['CFO_PAT_Latest'].values.astype(float)
+    cfo_3yr = cashflow_df['CFO_3Yr_Cumulative'].values.astype(float)
+    wc_rev_ratio = cashflow_df['WC_Rev_Growth_Ratio'].values.astype(float)
+    debt = leverage_df['Total_Debt'].values.astype(float)
+    debt_3yr = leverage_df['Debt_3Yr_Back'].values.astype(float)
+    pe = valuation_df['PE'].values.astype(float)
+    pbv = valuation_df['PBV'].values.astype(float)
+    ev_ebitda = valuation_df['EV_EBITDA'].values.astype(float)
+    
+    # Calculate flags
+    structural_flags = {
+        'FLAG_LOW_ROE': (~np.isnan(roe)) & (roe < CONFIG['ROE_LOW_THRESHOLD']),
+        'FLAG_DECLINING_ROE': (~np.isnan(roe)) & (~np.isnan(roe_3)) & (roe < roe_3 - 2) & (roe < CONFIG['ROE_DECLINING_THRESHOLD']),
+        'FLAG_LOW_ROCE': (~np.isnan(roce)) & (roce < CONFIG['ROCE_LOW_THRESHOLD']),
+        'FLAG_DECLINING_ROCE': (~np.isnan(roce)) & (~np.isnan(roce_3)) & (roce < roce_3 - 2) & (roce < CONFIG['ROCE_DECLINING_THRESHOLD']),
+        'FLAG_POOR_CASH_CONVERSION': (~np.isnan(cfo_pat)) & (cfo_pat < CONFIG['CFO_PAT_LOW_THRESHOLD']) & (cfo_pat >= 0),
+        'FLAG_NEGATIVE_CFO': (~np.isnan(cfo)) & (cfo < 0),
+        'FLAG_INCONSISTENT_CFO': (~np.isnan(cfo_3yr)) & (cfo_3yr < 0),
+        'FLAG_HIGH_OTHER_INCOME': (~np.isnan(other_inc_pct)) & (other_inc_pct > CONFIG['OTHER_INCOME_PCT_THRESHOLD']),
+        'FLAG_MARGIN_COMPRESSION': (~np.isnan(opm)) & (~np.isnan(opm_py)) & (opm < opm_py - 2),
+        'FLAG_RISING_DEBT': ((~np.isnan(debt)) & (~np.isnan(debt_3yr)) & (debt_3yr > 0) & (debt > debt_3yr * CONFIG['DEBT_GROWTH_THRESHOLD'])) |
+                            ((~np.isnan(debt)) & (debt_3yr == 0) & (debt > CONFIG['DEBT_MIN_NEW_THRESHOLD'])),
+        'FLAG_WC_DIVERGENCE': (~np.isnan(wc_rev_ratio)) & (wc_rev_ratio > 1.5) & np.isfinite(wc_rev_ratio),
+    }
+    pricing_flags = {
+        'FLAG_HIGH_PE': (~np.isnan(pe)) & (pe > CONFIG['PE_HIGH_THRESHOLD']),
+        'FLAG_NEGATIVE_PE': (~np.isnan(pe)) & (pe < 0),
+        'FLAG_HIGH_EV_EBITDA': (~np.isnan(ev_ebitda)) & (ev_ebitda > CONFIG['EV_EBITDA_HIGH_THRESHOLD']),
+        'FLAG_NEGATIVE_EBITDA': (~np.isnan(ev_ebitda)) & (ev_ebitda < 0),
+        'FLAG_HIGH_PBV_ROE': (~np.isnan(pbv)) & (~np.isnan(roe)) & (roe > 0) & (pbv > roe / 2),
+    }
+    all_flags = {**structural_flags, **pricing_flags}
+    
+    # Calculate severity
+    critical_count, major_count, minor_count = np.zeros(n), np.zeros(n), np.zeros(n)
+    total_count, quality_severity, pricing_severity = np.zeros(n), np.zeros(n), np.zeros(n)
+    
+    for fname, farr in structural_flags.items():
+        defn = RED_FLAG_DEFINITIONS.get(fname.replace('FLAG_', ''), {})
+        total_count += farr.astype(int)
+        quality_severity += farr.astype(float) * defn.get('weight', 0.5)
+        if defn.get('severity') == 'CRITICAL': critical_count += farr.astype(int)
+        elif defn.get('severity') == 'MAJOR': major_count += farr.astype(int)
+        else: minor_count += farr.astype(int)
+    
+    for fname, farr in pricing_flags.items():
+        defn = RED_FLAG_DEFINITIONS.get(fname.replace('FLAG_', ''), {})
+        total_count += farr.astype(int)
+        pricing_severity += farr.astype(float) * defn.get('weight', 0.5)
+        if defn.get('severity') == 'CRITICAL': critical_count += farr.astype(int)
+        elif defn.get('severity') == 'MAJOR': major_count += farr.astype(int)
+        else: minor_count += farr.astype(int)
+    
+    quality_risk = np.where(critical_count >= 2, 'CRITICAL', np.where(critical_count >= 1, 'HIGH',
+                  np.where(major_count >= 2, 'ELEVATED', np.where(major_count >= 1, 'MODERATE', 'LOW'))))
+    
+    # TRUE VECTORIALIZATION for flag names - NO apply(axis=1)
+    flag_names = [fname.replace('FLAG_', '') for fname in all_flags.keys()]
+    flag_arrays = list(all_flags.values())
+    
+    # Build quality flags string using numpy
+    quality_flag_names = np.full(n, '', dtype=object)
+    for fname, farr in structural_flags.items():
+        name = fname.replace('FLAG_', '')
+        quality_flag_names = np.where(farr, np.where(quality_flag_names == '', name, quality_flag_names + ', ' + name), quality_flag_names)
+    
+    # Build pricing flags string
+    pricing_flag_names = np.full(n, '', dtype=object)
+    for fname, farr in pricing_flags.items():
+        name = fname.replace('FLAG_', '')
+        pricing_flag_names = np.where(farr, np.where(pricing_flag_names == '', name, pricing_flag_names + ', ' + name), pricing_flag_names)
+    
+    # Combine all flags
+    all_flag_names = np.where((quality_flag_names != '') & (pricing_flag_names != ''),
+                              quality_flag_names + ', ' + pricing_flag_names,
+                              np.where(quality_flag_names != '', quality_flag_names, pricing_flag_names))
+    
+    # Build explained strings using numpy
+    explained = np.full(n, '', dtype=object)
+    for fname, farr in all_flags.items():
+        defn = RED_FLAG_DEFINITIONS.get(fname.replace('FLAG_', ''), {})
+        meaning = f"{fname.replace('FLAG_', '')}: {defn.get('meaning', '')}"
+        explained = np.where(farr, np.where(explained == '', meaning, explained + ' | ' + meaning), explained)
+    
+    rf_data = {
+        'ISIN': m[COLS['ISIN_CODE']].values, 'NSE_Code': m[COLS['NSE_CODE']].values, 'BSE_Code': m[COLS['BSE_CODE']].values,
+        'Quality_Risk': quality_risk, 'Quality_Severity': np.round(quality_severity, 1),
+        'Pricing_Severity': np.round(pricing_severity, 1), 'Total_Severity': np.round(quality_severity + pricing_severity, 1),
+        'Critical_Flags': critical_count.astype(int), 'Major_Flags': major_count.astype(int),
+        'Minor_Flags': minor_count.astype(int), 'Red_Flag_Count': total_count.astype(int),
+        'Quality_Flags': quality_flag_names.tolist(), 'Pricing_Flags': pricing_flag_names.tolist(),
+        'Red_Flags': all_flag_names.tolist(), 'Red_Flags_Explained': explained.tolist(),
+    }
+    for fname, farr in all_flags.items():
+        rf_data[fname] = farr.astype(int)
+    
+    return pd.DataFrame(rf_data)
+
+
+def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df: pd.DataFrame,
+                         leverage_df: pd.DataFrame, growth_df: pd.DataFrame, cashflow_df: pd.DataFrame,
+                         red_flags_df: pd.DataFrame, shareholding_df: pd.DataFrame) -> pd.DataFrame:
+    """Build analysis sheet."""
+    n = len(m)
+    bq = quality_df['Business_Quality_Score'].values.astype(float)
+    vc = valuation_df['Valuation_Comfort_Score'].values.astype(float)
+    fs = leverage_df['Financial_Strength_Score'].values.astype(float)
+    gd = growth_df['Growth_Durability_Score'].values.astype(float)
+    
+    cfo_pat = pd.Series(cashflow_df['CFO_PAT_Latest'].values, dtype=float)
+    cfo_latest = pd.Series(cashflow_df['CFO_Latest'].values, dtype=float)
+    cfo_3yr = pd.Series(cashflow_df['CFO_3Yr_Cumulative'].values, dtype=float)
+    cf_score = vectorized_score(cfo_pat, SCORING_BINS['CFO_PAT'])
+    cf_score = np.where(cfo_latest < 0, np.minimum(cf_score, 15), cf_score)
+    cf_score = np.where((~pd.isna(cfo_3yr)) & (cfo_3yr < 0), np.minimum(cf_score, 10), cf_score)
+    
+    composite = 0.35 * bq + 0.25 * gd + 0.20 * vc + 0.10 * fs + 0.10 * cf_score
+    score_band = np.where(pd.isna(composite), 'N/A', np.where(composite >= CONFIG['SCORE_BAND_A'], 'A',
+                 np.where(composite >= CONFIG['SCORE_BAND_B'], 'B', np.where(composite >= CONFIG['SCORE_BAND_C'], 'C',
+                 np.where(composite >= CONFIG['SCORE_BAND_D'], 'D', 'F')))))
+    
+    critical = red_flags_df['Critical_Flags'].values.astype(int)
+    quality_severity = red_flags_df['Quality_Severity'].values.astype(float)
+    quality_flags_str = red_flags_df['Quality_Flags'].values
+    pricing_flags_str = red_flags_df['Pricing_Flags'].values
+    mcap = m[COLS['MARKET_CAP']].values
+    pe = valuation_df['PE'].values
+    inst = shareholding_df['Institutional_Holding'].values
+    promoter_chg = shareholding_df['Promoter_Change_3Yr'].values.astype(float)
+    
+    # Decision logic
+    decision = np.where(quality_severity >= CONFIG['SEVERITY_FAILED_THRESHOLD'], 'SCREEN_FAILED',
+               np.where(quality_severity >= CONFIG['SEVERITY_FLAGS_THRESHOLD'], 'SCREEN_PASSED_FLAGS',
+               np.where(quality_severity >= CONFIG['SEVERITY_MINOR_THRESHOLD'], 'SCREEN_PASSED_FLAGS',
+               np.where((pricing_flags_str != '') & np.isin(score_band, ['A', 'B']), 'SCREEN_PASSED_EXPENSIVE',
+               np.where(np.isin(score_band, ['A', 'B']), 'GATES_CLEARED',
+               np.where(score_band == 'C', 'SCREEN_MARGINAL', 'SCREEN_FAILED'))))))
+    
+    reject_reason = np.where(decision == 'SCREEN_FAILED', np.where(critical >= 1,
+                            "Critical flag detected", "Multiple major flags"),
+                   np.where(decision == 'SCREEN_PASSED_FLAGS', "Quality concerns",
+                   np.where(decision == 'SCREEN_PASSED_EXPENSIVE', "Valuation concern",
+                   np.where(decision == 'GATES_CLEARED', "None",
+                   np.where(decision == 'SCREEN_MARGINAL', "Marginal score", "Low score")))))
+    
+    # Conviction overrides
+    conviction_override = np.full(n, 'None', dtype=object)
+    for i in range(n):
+        pchg = promoter_chg[i]
+        if pd.isna(pchg): continue
+        if decision[i] in ('SCREEN_FAILED', 'SCREEN_MARGINAL') and pchg >= CONFIG['PROMOTER_BUY_THRESHOLD'] and quality_severity[i] < 4.0:
+            decision[i], conviction_override[i] = 'CONTRARIAN_BET', f"Promoter buying +{pchg:.1f}%"
+        elif decision[i] in ('GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE') and pchg <= CONFIG['PROMOTER_SELL_THRESHOLD']:
+            decision[i], conviction_override[i] = 'VALUE_TRAP', f"Promoter selling {pchg:.1f}%"
+    
+    thesis = np.where(decision == 'GATES_CLEARED', 'Passed quality gates',
+             np.where(decision == 'SCREEN_PASSED_EXPENSIVE', 'Good quality but expensive',
+             np.where(decision == 'SCREEN_PASSED_FLAGS', 'Passed with concerns',
+             np.where(decision == 'SCREEN_MARGINAL', 'Borderline metrics',
+             np.where(decision == 'CONTRARIAN_BET', 'Promoter buying despite low score',
+             np.where(decision == 'VALUE_TRAP', 'Good score but insiders exiting', ''))))))
+    
+    return pd.DataFrame({
+        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        'Decision_Bucket': decision, 'MCAP': mcap, 'Conviction_Override': conviction_override,
+        'SCREEN_ELIGIBLE': np.where(quality_severity >= CONFIG['SEVERITY_FAILED_THRESHOLD'], 'NO', 'YES'),
+        'Investment_Thesis': thesis, 'Reject_Reason': reject_reason,
+        'Composite_Score': np.round(composite, 1), 'Score_Band': score_band,
+        'Quality_Risk': red_flags_df['Quality_Risk'].values, 'Quality_Severity': np.round(quality_severity, 1),
+        'Critical_Flags': critical, 'Business_Quality_Score': np.round(bq, 1),
+        'Growth_Durability_Score': np.round(gd, 1), 'Valuation_Comfort_Score': np.round(vc, 1),
+        'Financial_Strength_Score': np.round(fs, 1), 'Cash_Flow_Score': np.round(cf_score.astype(float), 1),
+    })
+
+
+def build_summary_sheet(analysis_df: pd.DataFrame) -> pd.DataFrame:
+    """Build summary sheet."""
+    total = len(analysis_df)
+    dc = analysis_df['Decision_Bucket'].value_counts()
+    rows = [['STOCK SCREENING SUMMARY', '', ''], [f'Total: {total}', f'Generated: {datetime.now():%Y-%m-%d %H:%M}', ''],
+            ['Decision', 'Count', 'Pct']]
+    for b in ['GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE', 'SCREEN_PASSED_FLAGS', 'SCREEN_MARGINAL', 'SCREEN_FAILED', 'CONTRARIAN_BET', 'VALUE_TRAP']:
+        c = dc.get(b, 0)
+        rows.append([b, c, f'{c/total*100:.1f}%'])
+    return pd.DataFrame(rows, columns=['A', 'B', 'C'])
+
+
+def format_excel(writer: pd.ExcelWriter, sheets: Dict[str, pd.DataFrame]) -> None:
+    """Apply formatting."""
+    wb = writer.book
+    hdr = wb.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': 'white', 'border': 1})
+    bucket_fmts = {
+        'GATES_CLEARED': wb.add_format({'bg_color': '#92D050'}), 'SCREEN_PASSED_EXPENSIVE': wb.add_format({'bg_color': '#FFC000'}),
+        'SCREEN_PASSED_FLAGS': wb.add_format({'bg_color': '#FFEB9C'}), 'SCREEN_FAILED': wb.add_format({'bg_color': '#FF6B6B'}),
+        'CONTRARIAN_BET': wb.add_format({'bg_color': '#7030A0', 'font_color': 'white'}), 'VALUE_TRAP': wb.add_format({'bg_color': '#C00000', 'font_color': 'white'}),
+    }
+    for name, df in sheets.items():
+        ws = writer.sheets[name]
+        for i, c in enumerate(df.columns): ws.write(0, i, c, hdr)
+        for i, c in enumerate(df.columns):
+            mx = max(len(str(c)), df[c].fillna('').astype(str).str.len().max() if len(df) > 0 else 0)
+            ws.set_column(i, i, min(mx + 2, 30))
+        ws.freeze_panes(1, 1)
+        if name == 'Analysis' and 'Decision_Bucket' in df.columns:
+            bc = df.columns.get_loc('Decision_Bucket')
+            for ri in range(len(df)):
+                v = df.iloc[ri, bc]
+                if v in bucket_fmts: ws.write(ri + 1, bc, v, bucket_fmts[v])
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Stock analysis')
+    parser.add_argument('--output', default=os.path.join(BASE_DIR, 'stock_analysis.xlsx'))
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+    args = parser.parse_args()
+    
+    setup_logging(args.log_level)
+    logging.info("Starting stock analysis...")
+    
+    dfs = load_parquet_files()
+    if len(dfs) < 6:
+        logging.error(f"Missing parquet files. Found {len(dfs)}, expected 6.")
+        sys.exit(1)
+    
+    merged = merge_all(dfs)
+    
+    master_df = build_master_sheet(merged)
+    valuation_df = build_valuation_sheet(merged)
+    quality_df = build_quality_sheet(merged)
+    cashflow_df = build_cashflow_sheet(merged)
+    leverage_df = build_leverage_sheet(merged)
+    growth_df = build_growth_sheet(merged)
+    shareholding_df = build_shareholding_sheet(merged)
+    neglected_df = build_neglected_firm_sheet(merged, quality_df, leverage_df, shareholding_df)
+    dividends_df = build_dividends_sheet(merged)
+    red_flags_df = build_red_flags_sheet(merged, quality_df, cashflow_df, leverage_df, valuation_df)
+    analysis_df = build_analysis_sheet(merged, quality_df, valuation_df, leverage_df, growth_df, cashflow_df, red_flags_df, shareholding_df)
+    summary_df = build_summary_sheet(analysis_df)
+    
+    sort_idx = analysis_df['Composite_Score'].astype(float).argsort()[::-1]
+    analysis_df = analysis_df.iloc[sort_idx].reset_index(drop=True)
+    sheet_dfs = {n: df.iloc[sort_idx].reset_index(drop=True) for n, df in 
+                 {'Master': master_df, 'Valuation': valuation_df, 'Quality': quality_df, 'Cash_Flow': cashflow_df,
+                  'Leverage': leverage_df, 'Growth': growth_df, 'Shareholding': shareholding_df,
+                  'Neglected_Firm': neglected_df, 'Dividends': dividends_df, 'Red_Flags': red_flags_df}.items()}
+    
+    all_sheets = {'Analysis': analysis_df, **sheet_dfs, 'Summary': summary_df}
+    with pd.ExcelWriter(args.output, engine='xlsxwriter') as writer:
+        for name, df in all_sheets.items():
+            df.to_excel(writer, sheet_name=name, index=False)
+        format_excel(writer, all_sheets)
+    
+    logging.info(f"Done! Output: {args.output} ({os.path.getsize(args.output)/1024/1024:.1f} MB)")
+
+
+if __name__ == '__main__':
+    main()
