@@ -228,6 +228,7 @@ def build_valuation_sheet(m):
 
     valuation = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'PE': pe,
         'PBV': pbv,
         'EV_EBITDA': m.get('EVEBITDA_ur', np.nan),
@@ -362,6 +363,7 @@ def build_quality_sheet(m):
 
     quality = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'Business_Quality_Score': bq_score,
         'Earnings_Quality': eq,
         'Piotroski_Score': piotroski,
@@ -442,6 +444,7 @@ def build_cashflow_sheet(m):
 
     cashflow = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'CFO_Latest': cfo,
         'PAT_Latest': pat,
         'CFO_PAT_Latest': cfo_pat,
@@ -538,6 +541,7 @@ def build_leverage_sheet(m):
 
     leverage = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'Debt_Equity': de,
         'Interest_Coverage': ic,
         'Debt_Trend': debt_trend,
@@ -631,6 +635,7 @@ def build_growth_sheet(m):
 
     growth = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'Revenue_Growth_1Yr': rev_growth_1yr,
         'Revenue_Growth_3Yr': sales_g3,
         'Revenue_Growth_5Yr': sales_g5,
@@ -678,6 +683,7 @@ def build_shareholding_sheet(m):
 
     shareholding = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'Promoter_Holding': promoter,
         'Promoter_Change_3Yr': promoter_chg_3yr,
         'FII_Holding': fii,
@@ -741,6 +747,7 @@ def build_neglected_firm_sheet(m, quality_df, leverage_df, cashflow_df, growth_d
 
     neglected = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'Generic_Stock_Candidate': generic_candidate,
         'Neglect_Score': neglect_score,
         'Neglect_Reasons': reasons,
@@ -757,6 +764,7 @@ def build_dividends_sheet(m):
     """Build dividends sheet from available data."""
     dividends = pd.DataFrame({
         'NSE_Code': m['NSE Code'],
+        'ISIN': m['ISIN Code'],
         'Dividend_Last_Year': m.get('Dividend last year_ann', np.nan),
         'Dividend_Preceding_Year': m.get('Dividend preceding year_ann', np.nan),
         'Dividend_Payout': m.get('Dividend Payout_ur', np.nan),
@@ -879,6 +887,7 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
 
     rf_data = {
         'NSE_Code': m['NSE Code'].values,
+        'ISIN': m['ISIN Code'].values,
         'Quality_Risk': quality_risk,
         'Critical_Flags': critical_count.astype(int),
         'Major_Flags': major_count.astype(int),
@@ -988,6 +997,7 @@ def build_analysis_sheet(m, quality_df, valuation_df, leverage_df, growth_df,
 
     analysis = pd.DataFrame({
         'NSE_Code': m['NSE Code'].values,
+        'ISIN': m['ISIN Code'].values,
         'Decision_Bucket': decision,
         'MCAP': mcap,
         'Conviction_Override': '',
