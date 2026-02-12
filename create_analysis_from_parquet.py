@@ -868,18 +868,19 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
     flag_low_roce = (~np.isnan(roce)) & (roce < 10)
     flag_declining_roce = (~np.isnan(roce)) & (~np.isnan(roce_3)) & (roce < roce_3 - 2) & (roce < 15)
 
-    # POOR_CASH_CONVERSION: Use 3yr average-of-ratios as primary (weights each year equally),
-    # fallback to single-year. Also flags if any individual year has CFO/PAT < 0.2
-    # (terrible cash conversion in one year, even if other years compensate).
+    # POOR_CASH_CONVERSION: Primary check matches original script: CFO_PAT_3Yr < 0.7
+    # Secondary: worst individual year < 0.2 BUT only when 3yr average is also borderline
+    # (< 0.75) — a single bad year in an otherwise healthy average is less concerning.
     flag_poor_cash = (
-        # 3yr average-of-ratios CFO/PAT < 0.7 (primary check)
+        # 3yr average-of-ratios CFO/PAT < 0.7 (primary check, matches original)
         ((~np.isnan(cfo_pat_3yr)) & (cfo_pat_3yr < 0.7) & (cfo_pat_3yr >= 0))
         |
         # Or single-year < 0.7 when 3yr not available
         ((np.isnan(cfo_pat_3yr)) & (~np.isnan(cfo_pat)) & (cfo_pat < 0.7) & (cfo_pat >= 0))
         |
-        # Any individual year with CFO/PAT < 0.2 (terrible single-year conversion)
-        ((~np.isnan(worst_yr_cfo_pat)) & (worst_yr_cfo_pat < 0.2) & (worst_yr_cfo_pat >= 0))
+        # Worst year terrible AND 3yr average also borderline (not healthy)
+        ((~np.isnan(worst_yr_cfo_pat)) & (worst_yr_cfo_pat < 0.2) & (worst_yr_cfo_pat >= 0)
+         & (~np.isnan(cfo_pat_3yr)) & (cfo_pat_3yr < 0.75))
     )
 
     flag_neg_cfo = (~np.isnan(cfo)) & (cfo < 0)
@@ -895,6 +896,8 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
     avg_cfo_5yr = np.where(~np.isnan(cfo_5yr_series), cfo_5yr_series / 5.0, np.nan)
     cfo_5yr_vs_3yr_ratio = safe_div(avg_cfo_5yr, avg_cfo_3yr)
 
+    pos_cfo_count = cashflow_df['Positive_CFO_Years_3Yr'].values.astype(float)
+
     flag_inconsistent_cfo = (
         ((~np.isnan(cfo_3yr)) & (cfo_3yr < 0))
         |
@@ -903,8 +906,10 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         ((~np.isnan(pos_cfo_years)) & (pos_cfo_years < 2))
         |
         # 5yr per-year avg < 50% of 3yr per-year avg → weak older years
+        # BUT only when recent years aren't all positive (turnarounds are real)
         ((~np.isnan(cfo_5yr_vs_3yr_ratio)) & np.isfinite(cfo_5yr_vs_3yr_ratio)
-         & (avg_cfo_3yr > 0) & (cfo_5yr_vs_3yr_ratio < 0.5))
+         & (avg_cfo_3yr > 0) & (cfo_5yr_vs_3yr_ratio < 0.5)
+         & (pos_cfo_count < 3))
     )
     flag_high_other = (~np.isnan(other_inc_pct)) & (other_inc_pct > 30)
     flag_margin_comp = (~np.isnan(opm)) & (~np.isnan(opm_py)) & (opm < opm_py - 2)
