@@ -98,7 +98,15 @@ COLS = {
     
     # Profit & Income
     'PAT': 'Profit after tax',
+    'PAT_LAST_YEAR': 'Profit after tax last year',
+    'PAT_PRECEDING_YEAR': 'Profit after tax preceding year',
     'OTHER_INCOME': 'Other income',
+
+    # Quarterly Profit (for TTM PAT)
+    'NP_Q1': 'Net Profit latest quarter',
+    'NP_Q2': 'Net Profit preceding quarter',
+    'NP_Q3': 'Net profit 2quarters back',
+    'NP_Q4': 'Net profit 3quarters back',
     
     # Cash Flow Metrics
     'CFO_LAST_YEAR': 'Cash from operations last year',
@@ -224,6 +232,11 @@ CONFIG = {
     'SEVERITY_FAILED_THRESHOLD': 2.0,
     'SEVERITY_FLAGS_THRESHOLD': 1.0,
     'SEVERITY_MINOR_THRESHOLD': 0.5,
+    'CFO_PAT_WORST_YEAR_THRESHOLD': 0.2,
+    'CFO_PAT_BORDERLINE_THRESHOLD': 0.75,
+    'CFO_5YR_3YR_RATIO_THRESHOLD': 0.5,
+    'ASSET_TURNOVER_CAPITAL_INTENSIVE': 0.8,
+    'ASSET_TURNOVER_VERY_CAPITAL_INTENSIVE': 0.5,
     'PROMOTER_BUY_THRESHOLD': 3.0,
     'PROMOTER_SELL_THRESHOLD': -3.0,
 }
@@ -481,8 +494,10 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
     roce = pd.Series(get_col(m, 'ROCE', 'ANNUAL'), dtype=float)
     roce_3 = pd.Series(get_col(m, 'ROCE_3Y_AVG', 'RATIOS'), dtype=float)
     opm = pd.Series(get_col(m, 'OPM', 'ANNUAL'), dtype=float)
+    opm_ly = pd.Series(get_col(m, 'OPM_LAST_YEAR', 'ANNUAL'), dtype=float)
     opm_py = pd.Series(get_col(m, 'OPM_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
     piotroski = pd.Series(get_col(m, 'PIOTROSKI', 'RATIOS'), dtype=float)
+    asset_turnover = pd.Series(get_col(m, 'ASSET_TURNOVER', 'RATIOS'), dtype=float)
     
     bq_score = (vectorized_score(roe, SCORING_BINS['ROE']) + vectorized_score(roce, SCORING_BINS['ROCE']) +
                 vectorized_score(opm, SCORING_BINS['OPM']) + vectorized_score(piotroski, SCORING_BINS['PIOTROSKI']) +
@@ -512,34 +527,72 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
         'ROCE_Trend': np.where(pd.isna(roce) | pd.isna(roce_3), 'N/A',
                       np.where(roce > roce_3 + 2, 'IMPROVING', np.where(roce < roce_3 - 2, 'DECLINING', 'STABLE'))),
         'ROA_Latest': get_col(m, 'ROA', 'RATIOS'),
-        'OPM_Latest': opm, 'OPM_Preceding_Year': opm_py,
-        'OPM_Trend': np.where(pd.isna(opm) | pd.isna(opm_py), 'N/A',
-                     np.where(opm > opm_py + 1, 'IMPROVING', np.where(opm < opm_py - 1, 'DECLINING', 'STABLE'))),
+        'OPM_Latest': opm, 'OPM_Last_Year': opm_ly, 'OPM_Preceding_Year': opm_py,
+        'OPM_Trend': np.where(pd.isna(opm) | pd.isna(opm_ly), 'N/A',
+                     np.where(opm > opm_ly + 1, 'IMPROVING', np.where(opm < opm_ly - 1, 'DECLINING', 'STABLE'))),
+        'Asset_Turnover': asset_turnover,
         'Other_Income_Pct_PAT': safe_div(np.abs(other_inc) * 100, np.abs(pat)),
     })
 
 
 def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
-    """Build cash flow metrics sheet."""
+    """Build cash flow metrics sheet with TTM PAT and 3yr avg-of-ratios."""
     cfo = pd.Series(get_col(m, 'CFO_LAST_YEAR', 'CASHFLOW'), dtype=float)
-    pat = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
+    pat_annual = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
     cfo_py = pd.Series(get_col(m, 'CFO_PRECEDING_YEAR', 'CASHFLOW'), dtype=float)
     total_assets = pd.Series(get_col(m, 'TOTAL_ASSETS', 'BALANCE'), dtype=float)
     wc = pd.Series(get_col(m, 'WORKING_CAPITAL', 'BALANCE'), dtype=float)
     wc_py = pd.Series(get_col(m, 'WORKING_CAPITAL_PY', 'BALANCE'), dtype=float)
     sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
     sales_ly = pd.Series(get_col(m, 'SALES_LAST_YEAR', 'ANNUAL'), dtype=float)
+
+    # TTM PAT from quarterly data (sum of last 4 quarters)
+    np_q1 = pd.Series(get_col(m, 'NP_Q1', 'QUARTERLY'), dtype=float)
+    np_q2 = pd.Series(get_col(m, 'NP_Q2', 'QUARTERLY'), dtype=float)
+    np_q3 = pd.Series(get_col(m, 'NP_Q3', 'QUARTERLY'), dtype=float)
+    np_q4 = pd.Series(get_col(m, 'NP_Q4', 'QUARTERLY'), dtype=float)
+    pat_ttm = np_q1 + np_q2 + np_q3 + np_q4
+    pat = pd.Series(np.where(pd.notna(pat_ttm) & (pat_ttm != 0), pat_ttm, pat_annual), dtype=float)
+
+    cfo_pat = safe_div(cfo, pat)
+    cfo_3yr = pd.Series(get_col(m, 'CFO_3Y_CUMULATIVE', 'CASHFLOW'), dtype=float)
+    cfo_5yr = pd.Series(get_col(m, 'CFO_5Y_CUMULATIVE', 'CASHFLOW'), dtype=float)
+
+    # 3yr CFO/PAT: average of individual year ratios (weights each year equally)
+    pat_ly = pd.Series(get_col(m, 'PAT_LAST_YEAR', 'ANNUAL'), dtype=float)
+    pat_py = pd.Series(get_col(m, 'PAT_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
+    cfo_yr3_inferred = cfo_3yr - cfo - cfo_py  # inferred 3rd year back
+    r1 = pd.Series(safe_div(cfo, pat_annual), dtype=float)
+    r2 = pd.Series(safe_div(cfo_py, pat_ly), dtype=float)
+    r3 = pd.Series(safe_div(cfo_yr3_inferred, pat_py), dtype=float)
+    ratio_sum = r1.fillna(0) + r2.fillna(0) + r3.fillna(0)
+    ratio_count = (~pd.isna(r1)).astype(int) + (~pd.isna(r2)).astype(int) + (~pd.isna(r3)).astype(int)
+    pat_3yr_cum = pat_annual + pat_ly + pat_py
+    cfo_pat_3yr_avg = pd.Series(
+        np.where(ratio_count >= 2, ratio_sum / ratio_count, safe_div(cfo_3yr, pat_3yr_cum)), dtype=float)
+
+    # Worst individual year CFO/PAT ratio
+    worst_yr = np.minimum(np.minimum(
+        np.where(pd.isna(r1), 999, r1), np.where(pd.isna(r2), 999, r2)),
+        np.where(pd.isna(r3), 999, r3))
+    worst_yr = np.where(worst_yr == 999, np.nan, worst_yr)
+
+    # Count positive CFO years (from reconstructed latest, preceding, inferred yr3)
+    pos_cfo_count = (cfo > 0).astype(int) + (cfo_py > 0).astype(int) + (cfo_yr3_inferred > 0).astype(int)
+
     wc_growth = safe_div(wc - wc_py, np.abs(wc_py)) * 100
     rev_growth = safe_div(sales - sales_ly, np.abs(sales_ly)) * 100
-    
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
-        'CFO_Latest': cfo, 'PAT_Latest': pat, 'CFO_PAT_Latest': safe_div(cfo, pat),
+        'CFO_Latest': cfo, 'PAT_Latest': pat, 'PAT_TTM': pat_ttm, 'PAT_Annual': pat_annual,
+        'CFO_PAT_Latest': cfo_pat, 'CFO_PAT_3Yr_Avg': cfo_pat_3yr_avg,
+        'Positive_CFO_Years_3Yr': pos_cfo_count, 'CFO_Year3_Inferred': cfo_yr3_inferred,
+        'Worst_Year_CFO_PAT': worst_yr,
         'FCF_Latest': get_col(m, 'FCF_LAST_YEAR', 'CASHFLOW'), 'CFO_Preceding_Year': cfo_py,
         'CFO_Trend': np.where(pd.isna(cfo) | pd.isna(cfo_py), 'N/A',
                      np.where(cfo > cfo_py * 1.1, 'IMPROVING', np.where(cfo < cfo_py * 0.9, 'DECLINING', 'STABLE'))),
-        'CFO_3Yr_Cumulative': get_col(m, 'CFO_3Y_CUMULATIVE', 'CASHFLOW'),
-        'CFO_5Yr_Cumulative': get_col(m, 'CFO_5Y_CUMULATIVE', 'CASHFLOW'),
+        'CFO_3Yr_Cumulative': cfo_3yr, 'CFO_5Yr_Cumulative': cfo_5yr,
         'CFROA': safe_div(cfo, total_assets), 'Accruals': safe_div(pat - cfo, total_assets),
         'WC_Growth_Pct': wc_growth, 'Rev_Growth_Pct': rev_growth,
         'WC_Rev_Growth_Ratio': safe_div(wc_growth, rev_growth),
@@ -668,38 +721,71 @@ def build_dividends_sheet(m: pd.DataFrame) -> pd.DataFrame:
 
 def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df: pd.DataFrame,
                           leverage_df: pd.DataFrame, valuation_df: pd.DataFrame) -> pd.DataFrame:
-    """Build red flags sheet with TRUE vectorization (no apply(axis=1))."""
+    """Build red flags sheet with sector-adjusted severity and enhanced CFO checks."""
     n = len(m)
-    
+
     # Extract values
     roe = quality_df['ROE_Latest'].values.astype(float)
     roe_3 = quality_df['ROE_3Yr_Avg'].values.astype(float)
     roce = quality_df['ROCE_Latest'].values.astype(float)
     roce_3 = quality_df['ROCE_3Yr_Avg'].values.astype(float)
     opm = quality_df['OPM_Latest'].values.astype(float)
-    opm_py = quality_df['OPM_Preceding_Year'].values.astype(float)
+    opm_ly = quality_df['OPM_Last_Year'].values.astype(float)  # year-1 (not year-2)
     other_inc_pct = quality_df['Other_Income_Pct_PAT'].values.astype(float)
+    asset_turnover = quality_df['Asset_Turnover'].values.astype(float)
+
     cfo = cashflow_df['CFO_Latest'].values.astype(float)
     cfo_pat = cashflow_df['CFO_PAT_Latest'].values.astype(float)
+    cfo_pat_3yr = cashflow_df['CFO_PAT_3Yr_Avg'].values.astype(float)
+    worst_yr_cfo_pat = cashflow_df['Worst_Year_CFO_PAT'].values.astype(float)
     cfo_3yr = cashflow_df['CFO_3Yr_Cumulative'].values.astype(float)
+    cfo_5yr = cashflow_df['CFO_5Yr_Cumulative'].values.astype(float)
+    cfo_yr3 = cashflow_df['CFO_Year3_Inferred'].values.astype(float)
+    pos_cfo_years = cashflow_df['Positive_CFO_Years_3Yr'].values.astype(float)
     wc_rev_ratio = cashflow_df['WC_Rev_Growth_Ratio'].values.astype(float)
+
     debt = leverage_df['Total_Debt'].values.astype(float)
     debt_3yr = leverage_df['Debt_3Yr_Back'].values.astype(float)
     pe = valuation_df['PE'].values.astype(float)
     pbv = valuation_df['PBV'].values.astype(float)
     ev_ebitda = valuation_df['EV_EBITDA'].values.astype(float)
-    
-    # Calculate flags
+
+    # ── Enhanced POOR_CASH_CONVERSION ──────────────────────────────────────
+    # Primary: 3yr avg-of-ratios < 0.7 (matches original script intent)
+    # Secondary: worst year < 0.2 BUT only when 3yr avg also borderline (< 0.75)
+    flag_poor_cash = (
+        ((~np.isnan(cfo_pat_3yr)) & (cfo_pat_3yr < CONFIG['CFO_PAT_LOW_THRESHOLD']) & (cfo_pat_3yr >= 0))
+        | ((np.isnan(cfo_pat_3yr)) & (~np.isnan(cfo_pat)) & (cfo_pat < CONFIG['CFO_PAT_LOW_THRESHOLD']) & (cfo_pat >= 0))
+        | ((~np.isnan(worst_yr_cfo_pat)) & (worst_yr_cfo_pat < CONFIG['CFO_PAT_WORST_YEAR_THRESHOLD']) & (worst_yr_cfo_pat >= 0)
+           & (~np.isnan(cfo_pat_3yr)) & (cfo_pat_3yr < CONFIG['CFO_PAT_BORDERLINE_THRESHOLD']))
+    )
+
+    # ── Enhanced INCONSISTENT_CFO ──────────────────────────────────────────
+    # 5yr vs 3yr check only when recent years aren't all positive (turnarounds are real)
+    avg_cfo_3yr = np.where(~np.isnan(cfo_3yr), cfo_3yr / 3.0, np.nan)
+    avg_cfo_5yr = np.where(~np.isnan(cfo_5yr), cfo_5yr / 5.0, np.nan)
+    cfo_5yr_vs_3yr = safe_div(avg_cfo_5yr, avg_cfo_3yr)
+
+    flag_inconsistent_cfo = (
+        ((~np.isnan(cfo_3yr)) & (cfo_3yr < 0))
+        | ((~np.isnan(cfo_yr3)) & (cfo_yr3 < 0))
+        | ((~np.isnan(pos_cfo_years)) & (pos_cfo_years < 2))
+        | ((~np.isnan(cfo_5yr_vs_3yr)) & np.isfinite(cfo_5yr_vs_3yr)
+           & (avg_cfo_3yr > 0) & (cfo_5yr_vs_3yr < CONFIG['CFO_5YR_3YR_RATIO_THRESHOLD'])
+           & (pos_cfo_years < 3))
+    )
+
+    # Calculate all flags
     structural_flags = {
         'FLAG_LOW_ROE': (~np.isnan(roe)) & (roe < CONFIG['ROE_LOW_THRESHOLD']),
         'FLAG_DECLINING_ROE': (~np.isnan(roe)) & (~np.isnan(roe_3)) & (roe < roe_3 - 2) & (roe < CONFIG['ROE_DECLINING_THRESHOLD']),
         'FLAG_LOW_ROCE': (~np.isnan(roce)) & (roce < CONFIG['ROCE_LOW_THRESHOLD']),
         'FLAG_DECLINING_ROCE': (~np.isnan(roce)) & (~np.isnan(roce_3)) & (roce < roce_3 - 2) & (roce < CONFIG['ROCE_DECLINING_THRESHOLD']),
-        'FLAG_POOR_CASH_CONVERSION': (~np.isnan(cfo_pat)) & (cfo_pat < CONFIG['CFO_PAT_LOW_THRESHOLD']) & (cfo_pat >= 0),
+        'FLAG_POOR_CASH_CONVERSION': flag_poor_cash,
         'FLAG_NEGATIVE_CFO': (~np.isnan(cfo)) & (cfo < 0),
-        'FLAG_INCONSISTENT_CFO': (~np.isnan(cfo_3yr)) & (cfo_3yr < 0),
+        'FLAG_INCONSISTENT_CFO': flag_inconsistent_cfo,
         'FLAG_HIGH_OTHER_INCOME': (~np.isnan(other_inc_pct)) & (other_inc_pct > CONFIG['OTHER_INCOME_PCT_THRESHOLD']),
-        'FLAG_MARGIN_COMPRESSION': (~np.isnan(opm)) & (~np.isnan(opm_py)) & (opm < opm_py - 2),
+        'FLAG_MARGIN_COMPRESSION': (~np.isnan(opm)) & (~np.isnan(opm_ly)) & (opm < opm_ly - 2),
         'FLAG_RISING_DEBT': ((~np.isnan(debt)) & (~np.isnan(debt_3yr)) & (debt_3yr > 0) & (debt > debt_3yr * CONFIG['DEBT_GROWTH_THRESHOLD'])) |
                             ((~np.isnan(debt)) & (debt_3yr == 0) & (debt > CONFIG['DEBT_MIN_NEW_THRESHOLD'])),
         'FLAG_WC_DIVERGENCE': (~np.isnan(wc_rev_ratio)) & (wc_rev_ratio > 1.5) & np.isfinite(wc_rev_ratio),
@@ -712,19 +798,47 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         'FLAG_HIGH_PBV_ROE': (~np.isnan(pbv)) & (~np.isnan(roe)) & (roe > 0) & (pbv > roe / 2),
     }
     all_flags = {**structural_flags, **pricing_flags}
-    
-    # Calculate severity
+
+    # ── Sector-based severity adjustments (matching original script) ───────
+    is_cap_intensive = (~np.isnan(asset_turnover)) & (asset_turnover < CONFIG['ASSET_TURNOVER_CAPITAL_INTENSIVE'])
+    is_very_cap_intensive = (~np.isnan(asset_turnover)) & (asset_turnover < CONFIG['ASSET_TURNOVER_VERY_CAPITAL_INTENSIVE'])
+
+    weight_overrides = {
+        'FLAG_POOR_CASH_CONVERSION': np.where(is_cap_intensive & flag_poor_cash, 0.5, 2.0),
+        'FLAG_NEGATIVE_CFO': np.where(is_very_cap_intensive & structural_flags['FLAG_NEGATIVE_CFO'], 1.0, 2.0),
+        'FLAG_INCONSISTENT_CFO': np.where(is_cap_intensive & flag_inconsistent_cfo, 1.0, 2.0),
+    }
+
+    # Track sector adjustments for reporting
+    sector_adj = np.full(n, '', dtype=object)
+    adj_text = [
+        (is_cap_intensive & flag_poor_cash, "POOR_CASH_CONVERSION: CRITICAL→MINOR"),
+        (is_very_cap_intensive & structural_flags['FLAG_NEGATIVE_CFO'], "NEGATIVE_CFO: CRITICAL→MAJOR"),
+        (is_cap_intensive & flag_inconsistent_cfo, "INCONSISTENT_CFO: CRITICAL→MAJOR"),
+    ]
+    for cond, text in adj_text:
+        sector_adj = np.where(cond, np.where(sector_adj == '', text, sector_adj + ' | ' + text), sector_adj)
+
+    # Calculate severity with sector-adjusted weights
     critical_count, major_count, minor_count = np.zeros(n), np.zeros(n), np.zeros(n)
     total_count, quality_severity, pricing_severity = np.zeros(n), np.zeros(n), np.zeros(n)
-    
+
     for fname, farr in structural_flags.items():
         defn = RED_FLAG_DEFINITIONS.get(fname.replace('FLAG_', ''), {})
         total_count += farr.astype(int)
-        quality_severity += farr.astype(float) * defn.get('weight', 0.5)
-        if defn.get('severity') == 'CRITICAL': critical_count += farr.astype(int)
-        elif defn.get('severity') == 'MAJOR': major_count += farr.astype(int)
-        else: minor_count += farr.astype(int)
-    
+        if fname in weight_overrides:
+            weight = weight_overrides[fname]  # per-stock array
+            is_flagged = farr.astype(bool)
+            critical_count += (is_flagged & (weight >= 2.0)).astype(int)
+            major_count += (is_flagged & (weight >= 1.0) & (weight < 2.0)).astype(int)
+            minor_count += (is_flagged & (weight < 1.0)).astype(int)
+        else:
+            weight = defn.get('weight', 0.5)
+            if defn.get('severity') == 'CRITICAL': critical_count += farr.astype(int)
+            elif defn.get('severity') == 'MAJOR': major_count += farr.astype(int)
+            else: minor_count += farr.astype(int)
+        quality_severity += farr.astype(float) * weight
+
     for fname, farr in pricing_flags.items():
         defn = RED_FLAG_DEFINITIONS.get(fname.replace('FLAG_', ''), {})
         total_count += farr.astype(int)
@@ -732,38 +846,31 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         if defn.get('severity') == 'CRITICAL': critical_count += farr.astype(int)
         elif defn.get('severity') == 'MAJOR': major_count += farr.astype(int)
         else: minor_count += farr.astype(int)
-    
+
     quality_risk = np.where(critical_count >= 2, 'CRITICAL', np.where(critical_count >= 1, 'HIGH',
                   np.where(major_count >= 2, 'ELEVATED', np.where(major_count >= 1, 'MODERATE', 'LOW'))))
-    
-    # TRUE VECTORIALIZATION for flag names - NO apply(axis=1)
-    flag_names = [fname.replace('FLAG_', '') for fname in all_flags.keys()]
-    flag_arrays = list(all_flags.values())
-    
-    # Build quality flags string using numpy
+
+    # Build flag name strings using numpy
     quality_flag_names = np.full(n, '', dtype=object)
     for fname, farr in structural_flags.items():
         name = fname.replace('FLAG_', '')
         quality_flag_names = np.where(farr, np.where(quality_flag_names == '', name, quality_flag_names + ', ' + name), quality_flag_names)
-    
-    # Build pricing flags string
+
     pricing_flag_names = np.full(n, '', dtype=object)
     for fname, farr in pricing_flags.items():
         name = fname.replace('FLAG_', '')
         pricing_flag_names = np.where(farr, np.where(pricing_flag_names == '', name, pricing_flag_names + ', ' + name), pricing_flag_names)
-    
-    # Combine all flags
+
     all_flag_names = np.where((quality_flag_names != '') & (pricing_flag_names != ''),
                               quality_flag_names + ', ' + pricing_flag_names,
                               np.where(quality_flag_names != '', quality_flag_names, pricing_flag_names))
-    
-    # Build explained strings using numpy
+
     explained = np.full(n, '', dtype=object)
     for fname, farr in all_flags.items():
         defn = RED_FLAG_DEFINITIONS.get(fname.replace('FLAG_', ''), {})
         meaning = f"{fname.replace('FLAG_', '')}: {defn.get('meaning', '')}"
         explained = np.where(farr, np.where(explained == '', meaning, explained + ' | ' + meaning), explained)
-    
+
     rf_data = {
         'ISIN': m[COLS['ISIN_CODE']].values, 'NSE_Code': m[COLS['NSE_CODE']].values, 'BSE_Code': m[COLS['BSE_CODE']].values,
         'Quality_Risk': quality_risk, 'Quality_Severity': np.round(quality_severity, 1),
@@ -772,10 +879,11 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         'Minor_Flags': minor_count.astype(int), 'Red_Flag_Count': total_count.astype(int),
         'Quality_Flags': quality_flag_names.tolist(), 'Pricing_Flags': pricing_flag_names.tolist(),
         'Red_Flags': all_flag_names.tolist(), 'Red_Flags_Explained': explained.tolist(),
+        'Sector_Adjustments': sector_adj.tolist(),
     }
     for fname, farr in all_flags.items():
         rf_data[fname] = farr.astype(int)
-    
+
     return pd.DataFrame(rf_data)
 
 
