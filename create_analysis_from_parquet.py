@@ -834,11 +834,15 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         'FLAG_HIGH_PBV_ROE': flag_high_pbv_roe,
     }
 
-    # Count flags by severity
+    # Count flags by severity and compute Quality_Severity (structural only)
+    # and Pricing_Severity (pricing only) — matching original script separation
+    # Weights: CRITICAL=2.0, MAJOR=1.0, MINOR=0.5
     critical_count = np.zeros(n)
     major_count = np.zeros(n)
     minor_count = np.zeros(n)
     total_count = np.zeros(n)
+    quality_severity = np.zeros(n, dtype=float)   # structural flags only
+    pricing_severity = np.zeros(n, dtype=float)    # pricing flags only
 
     all_flags = {**structural_flags, **pricing_flags}
     flag_name_to_def = {}
@@ -847,10 +851,27 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         if key in RED_FLAG_DEFINITIONS:
             flag_name_to_def[fname] = RED_FLAG_DEFINITIONS[key]
 
-    for fname, farr in all_flags.items():
+    # Structural flags → quality_severity
+    for fname, farr in structural_flags.items():
         total_count += farr.astype(int)
         defn = flag_name_to_def.get(fname, {})
         sev = defn.get('severity', 'MINOR')
+        weight = defn.get('weight', 0.5)
+        quality_severity += farr.astype(float) * weight
+        if sev == 'CRITICAL':
+            critical_count += farr.astype(int)
+        elif sev == 'MAJOR':
+            major_count += farr.astype(int)
+        else:
+            minor_count += farr.astype(int)
+
+    # Pricing flags → pricing_severity
+    for fname, farr in pricing_flags.items():
+        total_count += farr.astype(int)
+        defn = flag_name_to_def.get(fname, {})
+        sev = defn.get('severity', 'MINOR')
+        weight = defn.get('weight', 0.5)
+        pricing_severity += farr.astype(float) * weight
         if sev == 'CRITICAL':
             critical_count += farr.astype(int)
         elif sev == 'MAJOR':
@@ -889,6 +910,9 @@ def build_red_flags_sheet(m, quality_df, cashflow_df, leverage_df, valuation_df)
         'NSE_Code': m['NSE Code'].values,
         'ISIN': m['ISIN Code'].values,
         'Quality_Risk': quality_risk,
+        'Quality_Severity': np.round(quality_severity, 1),
+        'Pricing_Severity': np.round(pricing_severity, 1),
+        'Total_Severity': np.round(quality_severity + pricing_severity, 1),
         'Critical_Flags': critical_count.astype(int),
         'Major_Flags': major_count.astype(int),
         'Minor_Flags': minor_count.astype(int),
@@ -933,38 +957,107 @@ def build_analysis_sheet(m, quality_df, valuation_df, leverage_df, growth_df,
     # Composite Score: Quality 35%, Growth 25%, Valuation 20%, Leverage 10%, Cash Flow 10%
     composite = (0.35 * bq + 0.25 * gd + 0.20 * vc + 0.10 * fs + 0.10 * cf_score)
 
-    # Score band
-    score_band = np.where(composite >= 70, 'EXCELLENT',
-                 np.where(composite >= 55, 'GOOD',
-                 np.where(composite >= 40, 'AVERAGE',
-                 np.where(composite >= 25, 'BELOW_AVERAGE', 'POOR'))))
+    # Score band (matches original: A/B/C/D/F)
+    score_band = np.where(composite >= 80, 'A',
+                 np.where(composite >= 65, 'B',
+                 np.where(composite >= 50, 'C',
+                 np.where(composite >= 30, 'D', 'F'))))
 
-    # Decision bucket logic
+    # Extract red flag data
     critical = red_flags_df['Critical_Flags'].values.astype(int)
     major = red_flags_df['Major_Flags'].values.astype(int)
-    total_flags = red_flags_df['Red_Flag_Count'].values.astype(int)
+    quality_severity = red_flags_df['Quality_Severity'].values.astype(float)
     quality_risk = red_flags_df['Quality_Risk'].values
+    quality_flags_str = red_flags_df['Quality_Flags'].values
+    pricing_flags_str = red_flags_df['Pricing_Flags'].values
 
-    # Screen eligibility
     pe = valuation_df['PE'].values.astype(float)
     mcap = pd.Series(m['Market Capitalization'].values, dtype=float)
     piotroski = quality_df['Piotroski_Score'].values.astype(float)
 
-    # Decision buckets
-    decision = np.where(
-        (composite >= 55) & (critical == 0) & (major <= 1), 'INVEST',
-        np.where(
-            (composite >= 45) & (critical == 0), 'WATCHLIST',
-            np.where(
-                (composite >= 35) & (critical <= 1), 'HOLD_FOR_REVIEW',
-                'REJECT'
-            )
-        )
-    )
+    # Promoter holding data for conviction overrides
+    promoter_chg = shareholding_df['Promoter_Change_3Yr'].values.astype(float)
+    inst = shareholding_df['Institutional_Holding'].values.astype(float)
 
-    # Primary concern
+    n = len(m)
+
+    # ── SCREEN_ELIGIBLE (hard mechanical gate, YES/NO) ──────────────────
+    screen_eligible = np.where(quality_severity >= 2.0, 'NO', 'YES')
+
+    # ── Decision Bucket (severity-based, neutral language) ──────────────
+    # Matches original script logic exactly:
+    #   GATES_CLEARED           → Score A/B, no flags, clean slate
+    #   SCREEN_PASSED_EXPENSIVE → Good quality but expensive valuation
+    #   SCREEN_PASSED_FLAGS     → Passed with quality concerns (severity 0.5-1.9)
+    #   SCREEN_MARGINAL         → Score Band C (borderline)
+    #   SCREEN_FAILED           → Severity >= 2.0 or low score (D/F)
+    decision = []
+    reject_reason = []
+    for i in range(n):
+        sev = quality_severity[i]
+        band = score_band[i]
+        has_pricing = bool(pricing_flags_str[i])
+        crit_list = quality_flags_str[i]
+
+        if sev >= 2.0:
+            decision.append('SCREEN_FAILED')
+            if critical[i] >= 1:
+                reject_reason.append(f"Critical flag: {crit_list}")
+            else:
+                reject_reason.append(f"Multiple major flags (severity {sev:.1f})")
+        elif sev >= 1.0:
+            decision.append('SCREEN_PASSED_FLAGS')
+            reject_reason.append(f"Quality concerns (severity {sev:.1f})")
+        elif sev >= 0.5:
+            decision.append('SCREEN_PASSED_FLAGS')
+            minor_list = quality_flags_str[i] if quality_flags_str[i] else 'N/A'
+            reject_reason.append(f"Minor flag: {minor_list}")
+        elif has_pricing and band in ('A', 'B'):
+            decision.append('SCREEN_PASSED_EXPENSIVE')
+            reject_reason.append(f"Valuation concern: {pricing_flags_str[i]}")
+        elif band in ('A', 'B'):
+            decision.append('GATES_CLEARED')
+            reject_reason.append('None')
+        elif band == 'C':
+            decision.append('SCREEN_MARGINAL')
+            reject_reason.append('Marginal score')
+        else:
+            decision.append('SCREEN_FAILED')
+            reject_reason.append('Low score')
+
+    decision = np.array(decision)
+    reject_reason = np.array(reject_reason)
+
+    # ── Conviction Overrides (CONTRARIAN_BET / VALUE_TRAP) ──────────────
+    conviction_override = np.full(n, 'None', dtype=object)
+
+    for i in range(n):
+        pchg = promoter_chg[i]
+        if pd.isna(pchg):
+            continue
+        # CONTRARIAN_BET: Failed/marginal + promoter buying > 3%
+        if (decision[i] in ('SCREEN_FAILED', 'SCREEN_MARGINAL')
+                and pchg >= 3.0
+                and quality_severity[i] < 4.0):
+            decision[i] = 'CONTRARIAN_BET'
+            conviction_override[i] = f"Promoter buying +{pchg:.1f}% despite low score"
+            reject_reason[i] = (
+                f"Score={composite[i]:.0f} (was {reject_reason[i]}) BUT "
+                f"promoter increased stake by {pchg:.1f}%—special situation"
+            )
+        # VALUE_TRAP: Good score + promoter selling > 3%
+        elif (decision[i] in ('GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE')
+                and pchg <= -3.0):
+            decision[i] = 'VALUE_TRAP'
+            conviction_override[i] = f"Promoter selling {pchg:.1f}% despite high score"
+            reject_reason[i] = (
+                f"Score={composite[i]:.0f} BUT "
+                f"promoter reduced stake by {abs(pchg):.1f}%—insider exit signal"
+            )
+
+    # ── Primary concern ─────────────────────────────────────────────────
     primary_concern = []
-    for i in range(len(m)):
+    for i in range(n):
         flags = red_flags_df['Red_Flags'].iloc[i]
         if critical[i] >= 2:
             primary_concern.append(f"Multiple critical flags: {flags}")
@@ -979,20 +1072,15 @@ def build_analysis_sheet(m, quality_df, valuation_df, leverage_df, growth_df,
         else:
             primary_concern.append('')
 
-    # Investment thesis placeholder
-    thesis = np.where(np.array(decision) == 'INVEST', 'Meets quality, growth, and valuation criteria',
-             np.where(np.array(decision) == 'WATCHLIST', 'Near threshold - monitor for improvement',
-             np.where(np.array(decision) == 'HOLD_FOR_REVIEW', 'Requires deeper analysis', '')))
+    # ── Investment thesis ────────────────────────────────────────────────
+    thesis = np.where(decision == 'GATES_CLEARED', 'Passed quality gates—clean slate',
+             np.where(decision == 'SCREEN_PASSED_EXPENSIVE', 'Good quality but expensive—wait for better price',
+             np.where(decision == 'SCREEN_PASSED_FLAGS', 'Passed with concerns—needs deeper analysis',
+             np.where(decision == 'SCREEN_MARGINAL', 'Borderline metrics—monitor for improvement',
+             np.where(decision == 'CONTRARIAN_BET', 'Promoter buying despite low score—special situation',
+             np.where(decision == 'VALUE_TRAP', 'Good score but insiders exiting—verify before investing',
+             ''))))))
 
-    # Reject reason
-    reject_reason = np.where(np.array(decision) == 'REJECT',
-                    np.where(critical >= 2, 'Multiple critical red flags',
-                    np.where(critical >= 1, 'Critical red flag(s)',
-                    np.where(composite < 25, 'Very low composite score',
-                    'Below threshold on multiple dimensions'))), '')
-
-    # Generic stock candidate from neglected
-    inst = shareholding_df['Institutional_Holding'].values.astype(float)
     generic = np.where(inst <= 5, 'Potential', 'No')
 
     analysis = pd.DataFrame({
@@ -1000,13 +1088,15 @@ def build_analysis_sheet(m, quality_df, valuation_df, leverage_df, growth_df,
         'ISIN': m['ISIN Code'].values,
         'Decision_Bucket': decision,
         'MCAP': mcap,
-        'Conviction_Override': '',
-        'SCREEN_ELIGIBLE': np.where(np.array(decision).astype(str) != 'REJECT', 'Yes', 'No'),
+        'Conviction_Override': conviction_override,
+        'SCREEN_ELIGIBLE': screen_eligible,
         'Investment_Thesis': thesis,
         'Reject_Reason': reject_reason,
         'Composite_Score': np.round(composite, 1),
+        'Sector_Relative_Adj': 0.0,
         'Score_Band': score_band,
         'Quality_Risk': quality_risk,
+        'Quality_Severity': np.round(quality_severity, 1),
         'Critical_Flags': critical,
         'Major_Flags': major,
         'Primary_Concern': primary_concern,
@@ -1036,7 +1126,8 @@ def build_summary_sheet(analysis_df, master_df):
         ['Decision Bucket', 'Count', 'Percentage', '', '', ''],
     ]
 
-    for bucket in ['INVEST', 'WATCHLIST', 'HOLD_FOR_REVIEW', 'REJECT']:
+    for bucket in ['GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE', 'SCREEN_PASSED_FLAGS',
+                    'SCREEN_MARGINAL', 'SCREEN_FAILED', 'CONTRARIAN_BET', 'VALUE_TRAP']:
         cnt = decision_counts.get(bucket, 0)
         pct = f"{cnt/total*100:.1f}%"
         rows.append([bucket, cnt, pct, '', '', ''])
@@ -1046,7 +1137,7 @@ def build_summary_sheet(analysis_df, master_df):
     rows.append(['Score Band', 'Count', 'Percentage', '', '', ''])
 
     band_counts = analysis_df['Score_Band'].value_counts()
-    for band in ['EXCELLENT', 'GOOD', 'AVERAGE', 'BELOW_AVERAGE', 'POOR']:
+    for band in ['A', 'B', 'C', 'D', 'F']:
         cnt = band_counts.get(band, 0)
         pct = f"{cnt/total*100:.1f}%"
         rows.append([band, cnt, pct, '', '', ''])
@@ -1071,9 +1162,9 @@ def build_summary_sheet(analysis_df, master_df):
     rows.append(['Max', f'{cs.max():.1f}', '', '', '', ''])
 
     rows.append(['', '', '', '', '', ''])
-    rows.append(['TOP SECTORS BY INVEST COUNT', '', '', '', '', ''])
+    rows.append(['TOP SECTORS BY GATES_CLEARED COUNT', '', '', '', '', ''])
 
-    invest_stocks = analysis_df[analysis_df['Decision_Bucket'] == 'INVEST']['NSE_Code']
+    invest_stocks = analysis_df[analysis_df['Decision_Bucket'] == 'GATES_CLEARED']['NSE_Code']
     if len(invest_stocks) > 0:
         invest_master = master_df[master_df['NSE_Code'].isin(invest_stocks)]
         sector_counts = invest_master['Sector'].value_counts().head(10)
@@ -1105,11 +1196,18 @@ def format_excel(writer, sheets):
     num_fmt = workbook.add_format({'num_format': '#,##0.0'})
     int_fmt = workbook.add_format({'num_format': '#,##0'})
 
-    # Color formats for decision buckets
-    invest_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
-    watchlist_fmt = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700'})
-    review_fmt = workbook.add_format({'bg_color': '#FCE4D6', 'font_color': '#BF8F00'})
-    reject_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+    # Color formats for decision buckets (matching original script palette)
+    bucket_fmts = {
+        'GATES_CLEARED': workbook.add_format({'bg_color': '#92D050', 'font_color': '#000000'}),
+        'SCREEN_PASSED_EXPENSIVE': workbook.add_format({'bg_color': '#FFC000', 'font_color': '#000000'}),
+        'SCREEN_PASSED_FLAGS': workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700'}),
+        'SCREEN_PASSED_VERIFY': workbook.add_format({'bg_color': '#BDD7EE', 'font_color': '#000000'}),
+        'SCREEN_MARGINAL': workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#000000'}),
+        'DATA_INCOMPLETE': workbook.add_format({'bg_color': '#EDEDED', 'font_color': '#808080'}),
+        'SCREEN_FAILED': workbook.add_format({'bg_color': '#FF6B6B', 'font_color': '#000000'}),
+        'CONTRARIAN_BET': workbook.add_format({'bg_color': '#7030A0', 'font_color': '#FFFFFF'}),
+        'VALUE_TRAP': workbook.add_format({'bg_color': '#C00000', 'font_color': '#FFFFFF'}),
+    }
 
     for sheet_name, df in sheets.items():
         ws = writer.sheets[sheet_name]
@@ -1135,15 +1233,7 @@ def format_excel(writer, sheets):
             bucket_col = df.columns.get_loc('Decision_Bucket')
             for row_idx in range(len(df)):
                 val = df.iloc[row_idx, bucket_col]
-                fmt = None
-                if val == 'INVEST':
-                    fmt = invest_fmt
-                elif val == 'WATCHLIST':
-                    fmt = watchlist_fmt
-                elif val == 'HOLD_FOR_REVIEW':
-                    fmt = review_fmt
-                elif val == 'REJECT':
-                    fmt = reject_fmt
+                fmt = bucket_fmts.get(val)
                 if fmt:
                     ws.write(row_idx + 1, bucket_col, val, fmt)
 
@@ -1237,9 +1327,10 @@ def main():
     print("=" * 70)
     print(f"Total stocks analyzed: {len(analysis_df)}")
     dc = analysis_df['Decision_Bucket'].value_counts()
-    for bucket in ['INVEST', 'WATCHLIST', 'HOLD_FOR_REVIEW', 'REJECT']:
+    for bucket in ['GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE', 'SCREEN_PASSED_FLAGS',
+                    'SCREEN_MARGINAL', 'SCREEN_FAILED', 'CONTRARIAN_BET', 'VALUE_TRAP']:
         cnt = dc.get(bucket, 0)
-        print(f"  {bucket:20s}: {cnt:5d} ({cnt/len(analysis_df)*100:.1f}%)")
+        print(f"  {bucket:25s}: {cnt:5d} ({cnt/len(analysis_df)*100:.1f}%)")
 
     cs = analysis_df['Composite_Score'].astype(float)
     print(f"\nComposite Score: mean={cs.mean():.1f}, median={cs.median():.1f}, "
