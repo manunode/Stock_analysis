@@ -729,8 +729,9 @@ def build_dividends_sheet(m: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df: pd.DataFrame,
-                          leverage_df: pd.DataFrame, valuation_df: pd.DataFrame) -> pd.DataFrame:
-    """Build red flags sheet with sector-adjusted severity and enhanced CFO checks."""
+                          leverage_df: pd.DataFrame, valuation_df: pd.DataFrame,
+                          growth_df: pd.DataFrame) -> pd.DataFrame:
+    """Build red flags sheet with sector-adjusted severity, enhanced CFO checks, and cyclic peak risk."""
     n = len(m)
 
     # Extract values
@@ -906,6 +907,23 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
     earnings_quality_label = np.where(eq_issues >= 3, 'Aggressive',
                              np.where(eq_issues >= 1, 'Mixed', 'Clean'))
 
+    # ── Cyclic Peak Risk Detection ────────────────────────────────────────
+    # Detects if company might be at earnings peak (dangerous for entry)
+    rev_g1 = growth_df['Revenue_Growth_1Yr'].values.astype(float)
+    rev_g3 = growth_df['Revenue_Growth_3Yr'].values.astype(float)
+    opm_avg_3 = (opm + opm_ly + opm_py) / 3.0
+
+    cyclic_signals = np.zeros(n, dtype=int)
+    # Signal 1: OPM at peak (latest > 3yr avg by 20%)
+    cyclic_signals += ((~np.isnan(opm)) & (~np.isnan(opm_avg_3)) & (opm > opm_avg_3 * 1.2)).astype(int)
+    # Signal 2: Revenue decelerating (1Y growth < half of 3Y growth)
+    cyclic_signals += ((~np.isnan(rev_g1)) & (~np.isnan(rev_g3)) & (rev_g3 > 0) & (rev_g1 < rev_g3 * 0.5)).astype(int)
+    # Signal 3: High ROCE + low growth (reinvestment saturation)
+    cyclic_signals += ((~np.isnan(roce)) & (roce > 25) & (~np.isnan(rev_g1)) & (rev_g1 < 10)).astype(int)
+
+    cyclic_peak_risk = np.where(cyclic_signals >= 2, 'HIGH',
+                       np.where(cyclic_signals >= 1, 'MODERATE', 'LOW'))
+
     rf_data = {
         'ISIN': m[COLS['ISIN_CODE']].values, 'NSE_Code': m[COLS['NSE_CODE']].values, 'BSE_Code': m[COLS['BSE_CODE']].values,
         'Quality_Risk': quality_risk, 'Quality_Severity': np.round(quality_severity, 1),
@@ -916,6 +934,7 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         'Red_Flags': all_flag_names.tolist(), 'Red_Flags_Explained': explained.tolist(),
         'Sector_Adjustments': sector_adj.tolist(),
         'Earnings_Quality_Label': earnings_quality_label.tolist(),
+        'Cyclic_Peak_Risk': cyclic_peak_risk.tolist(),
     }
     for fname, farr in all_flags.items():
         rf_data[fname] = farr.astype(int)
@@ -950,18 +969,22 @@ def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df
     quality_flags_str = red_flags_df['Quality_Flags'].values
     pricing_flags_str = red_flags_df['Pricing_Flags'].values
     earnings_quality_label = red_flags_df['Earnings_Quality_Label'].values
+    cyclic_peak_risk = red_flags_df['Cyclic_Peak_Risk'].values
     mcap = m[COLS['MARKET_CAP']].values
     pe = valuation_df['PE'].values
     inst = shareholding_df['Institutional_Holding'].values
     promoter_chg = shareholding_df['Promoter_Change_3Yr'].values.astype(float)
 
     is_aggressive = (earnings_quality_label == 'Aggressive')
+    has_pricing_flags = (pricing_flags_str != '') & (~pd.isna(pricing_flags_str))
 
-    # Decision logic (mirrors JSON: severity → flags → pricing → aggressive → gates)
+    # Decision logic (mirrors JSON: severity → pricing → aggressive → gates)
+    # Note: Cyclic_Peak_Risk is informational only; not used as decision gate
+    # because parquet data differences cause false positives vs JSON
     decision = np.where(quality_severity >= CONFIG['SEVERITY_FAILED_THRESHOLD'], 'SCREEN_FAILED',
                np.where(quality_severity >= CONFIG['SEVERITY_FLAGS_THRESHOLD'], 'SCREEN_PASSED_FLAGS',
                np.where(quality_severity >= CONFIG['SEVERITY_MINOR_THRESHOLD'], 'SCREEN_PASSED_FLAGS',
-               np.where((pricing_flags_str != '') & np.isin(score_band, ['A', 'B']), 'SCREEN_PASSED_EXPENSIVE',
+               np.where(has_pricing_flags & np.isin(score_band, ['A', 'B']), 'SCREEN_PASSED_EXPENSIVE',
                np.where(is_aggressive & np.isin(score_band, ['A', 'B']), 'SCREEN_PASSED_FLAGS',
                np.where(np.isin(score_band, ['A', 'B']), 'GATES_CLEARED',
                np.where(score_band == 'C', 'SCREEN_MARGINAL', 'SCREEN_FAILED')))))))
@@ -972,7 +995,7 @@ def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df
                             np.where(is_aggressive & (quality_severity < CONFIG['SEVERITY_MINOR_THRESHOLD']),
                                      "Aggressive earnings quality", "Quality concerns"),
                    np.where(decision == 'SCREEN_PASSED_EXPENSIVE', "Valuation concern",
-                   np.where(decision == 'GATES_CLEARED', "None",
+                   np.where(decision == 'GATES_CLEARED', "Passed",
                    np.where(decision == 'SCREEN_MARGINAL', "Marginal score", "Low score")))))
     
     # Conviction overrides
@@ -1065,7 +1088,7 @@ def main():
     shareholding_df = build_shareholding_sheet(merged)
     neglected_df = build_neglected_firm_sheet(merged, quality_df, leverage_df, shareholding_df)
     dividends_df = build_dividends_sheet(merged)
-    red_flags_df = build_red_flags_sheet(merged, quality_df, cashflow_df, leverage_df, valuation_df)
+    red_flags_df = build_red_flags_sheet(merged, quality_df, cashflow_df, leverage_df, valuation_df, growth_df)
     analysis_df = build_analysis_sheet(merged, quality_df, valuation_df, leverage_df, growth_df, cashflow_df, red_flags_df, shareholding_df)
     summary_df = build_summary_sheet(analysis_df)
     
