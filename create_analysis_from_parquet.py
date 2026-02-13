@@ -237,6 +237,9 @@ CONFIG = {
     'CFO_5YR_3YR_RATIO_THRESHOLD': 0.5,
     'ASSET_TURNOVER_CAPITAL_INTENSIVE': 0.8,
     'ASSET_TURNOVER_VERY_CAPITAL_INTENSIVE': 0.5,
+    'NPM_OPM_GAP_THRESHOLD': 5.0,
+    'ACCRUALS_AGGRESSIVE_THRESHOLD': 0.5,
+    'CFO_PAT_EARNINGS_QUALITY_THRESHOLD': 0.8,
     'PROMOTER_BUY_THRESHOLD': 3.0,
     'PROMOTER_SELL_THRESHOLD': -3.0,
 }
@@ -282,6 +285,7 @@ STRUCTURAL_RED_FLAGS = {
     "MARGIN_COMPRESSION": {"severity": "MINOR", "weight": 0.5, "meaning": "Profit margins shrinking over time"},
     "RISING_DEBT": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Financial risk increasing"},
     "WC_DIVERGENCE": {"severity": "MINOR", "weight": 0.5, "meaning": "Working capital growing much faster than sales"},
+    "NPM_OPM_DIVERGENCE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Bottom line improving faster than operating performance"},
 }
 
 PRICING_RED_FLAGS = {
@@ -506,8 +510,12 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
                          np.where(np.abs(roe_5 - roe_3) <= 10, 6, 3)))), dtype=float))
     
     pat = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
+    sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
     other_inc = pd.Series(get_col(m, 'OTHER_INCOME', 'ANNUAL'), dtype=float)
-    
+    npm_current = safe_div(pat * 100, sales)  # computed current-year NPM
+    npm_ly = pd.Series(get_col(m, 'NPM_LAST_YEAR', 'ANNUAL'), dtype=float)
+    npm_py = pd.Series(get_col(m, 'NPM_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
         'Business_Quality_Score': bq_score,
@@ -531,6 +539,7 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
         'OPM_Trend': np.where(pd.isna(opm) | pd.isna(opm_ly), 'N/A',
                      np.where(opm > opm_ly + 1, 'IMPROVING', np.where(opm < opm_ly - 1, 'DECLINING', 'STABLE'))),
         'Asset_Turnover': asset_turnover,
+        'NPM_Latest': npm_current, 'NPM_Last_Year': npm_ly, 'NPM_Preceding_Year': npm_py,
         'Other_Income_Pct_PAT': safe_div(np.abs(other_inc) * 100, np.abs(pat)),
     })
 
@@ -731,8 +740,11 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
     roce_3 = quality_df['ROCE_3Yr_Avg'].values.astype(float)
     opm = quality_df['OPM_Latest'].values.astype(float)
     opm_ly = quality_df['OPM_Last_Year'].values.astype(float)  # year-1 (not year-2)
+    opm_py = quality_df['OPM_Preceding_Year'].values.astype(float)
     other_inc_pct = quality_df['Other_Income_Pct_PAT'].values.astype(float)
     asset_turnover = quality_df['Asset_Turnover'].values.astype(float)
+    npm_current = quality_df['NPM_Latest'].values.astype(float)
+    npm_py = quality_df['NPM_Preceding_Year'].values.astype(float)
 
     cfo = cashflow_df['CFO_Latest'].values.astype(float)
     cfo_pat = cashflow_df['CFO_PAT_Latest'].values.astype(float)
@@ -775,6 +787,17 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
            & (pos_cfo_years < 3))
     )
 
+    # ── NPM vs OPM Divergence ─────────────────────────────────────────────
+    # NPM improving faster than OPM suggests earnings from non-operating sources
+    # Approximate multi-year slope: (current - 2yr_back) / 2
+    npm_slope = safe_div(npm_current - npm_py, 2.0)
+    opm_slope = safe_div(opm - opm_py, 2.0)
+    npm_opm_gap = npm_slope - opm_slope
+    flag_npm_opm_divergence = (
+        (~np.isnan(npm_slope)) & (~np.isnan(opm_slope))
+        & np.isfinite(npm_opm_gap) & (npm_opm_gap > CONFIG['NPM_OPM_GAP_THRESHOLD'])
+    )
+
     # Calculate all flags
     structural_flags = {
         'FLAG_LOW_ROE': (~np.isnan(roe)) & (roe < CONFIG['ROE_LOW_THRESHOLD']),
@@ -789,6 +812,7 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         'FLAG_RISING_DEBT': ((~np.isnan(debt)) & (~np.isnan(debt_3yr)) & (debt_3yr > 0) & (debt > debt_3yr * CONFIG['DEBT_GROWTH_THRESHOLD'])) |
                             ((~np.isnan(debt)) & (debt_3yr == 0) & (debt > CONFIG['DEBT_MIN_NEW_THRESHOLD'])),
         'FLAG_WC_DIVERGENCE': (~np.isnan(wc_rev_ratio)) & (wc_rev_ratio > 1.5) & np.isfinite(wc_rev_ratio),
+        'FLAG_NPM_OPM_DIVERGENCE': flag_npm_opm_divergence,
     }
     pricing_flags = {
         'FLAG_HIGH_PE': (~np.isnan(pe)) & (pe > CONFIG['PE_HIGH_THRESHOLD']),
@@ -871,6 +895,17 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         meaning = f"{fname.replace('FLAG_', '')}: {defn.get('meaning', '')}"
         explained = np.where(farr, np.where(explained == '', meaning, explained + ' | ' + meaning), explained)
 
+    # ── Earnings Quality classification (Clean/Mixed/Aggressive) ─────────
+    # Mirrors JSON script logic (minus FREQUENT_EXCEPTIONALS which isn't in parquet)
+    accruals = cashflow_df['Accruals'].values.astype(float)
+    eq_issues = np.zeros(n, dtype=int)
+    eq_issues += ((~np.isnan(cfo_pat_3yr)) & (cfo_pat_3yr < CONFIG['CFO_PAT_EARNINGS_QUALITY_THRESHOLD'])).astype(int)
+    eq_issues += ((~np.isnan(accruals)) & (accruals > CONFIG['ACCRUALS_AGGRESSIVE_THRESHOLD'])).astype(int)
+    eq_issues += structural_flags.get('FLAG_HIGH_OTHER_INCOME', np.zeros(n, dtype=bool)).astype(int)
+    eq_issues += ((~np.isnan(pos_cfo_years)) & (pos_cfo_years < 2)).astype(int)
+    earnings_quality_label = np.where(eq_issues >= 3, 'Aggressive',
+                             np.where(eq_issues >= 1, 'Mixed', 'Clean'))
+
     rf_data = {
         'ISIN': m[COLS['ISIN_CODE']].values, 'NSE_Code': m[COLS['NSE_CODE']].values, 'BSE_Code': m[COLS['BSE_CODE']].values,
         'Quality_Risk': quality_risk, 'Quality_Severity': np.round(quality_severity, 1),
@@ -880,6 +915,7 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         'Quality_Flags': quality_flag_names.tolist(), 'Pricing_Flags': pricing_flag_names.tolist(),
         'Red_Flags': all_flag_names.tolist(), 'Red_Flags_Explained': explained.tolist(),
         'Sector_Adjustments': sector_adj.tolist(),
+        'Earnings_Quality_Label': earnings_quality_label.tolist(),
     }
     for fname, farr in all_flags.items():
         rf_data[fname] = farr.astype(int)
@@ -913,22 +949,28 @@ def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df
     quality_severity = red_flags_df['Quality_Severity'].values.astype(float)
     quality_flags_str = red_flags_df['Quality_Flags'].values
     pricing_flags_str = red_flags_df['Pricing_Flags'].values
+    earnings_quality_label = red_flags_df['Earnings_Quality_Label'].values
     mcap = m[COLS['MARKET_CAP']].values
     pe = valuation_df['PE'].values
     inst = shareholding_df['Institutional_Holding'].values
     promoter_chg = shareholding_df['Promoter_Change_3Yr'].values.astype(float)
-    
-    # Decision logic
+
+    is_aggressive = (earnings_quality_label == 'Aggressive')
+
+    # Decision logic (mirrors JSON: severity → flags → pricing → aggressive → gates)
     decision = np.where(quality_severity >= CONFIG['SEVERITY_FAILED_THRESHOLD'], 'SCREEN_FAILED',
                np.where(quality_severity >= CONFIG['SEVERITY_FLAGS_THRESHOLD'], 'SCREEN_PASSED_FLAGS',
                np.where(quality_severity >= CONFIG['SEVERITY_MINOR_THRESHOLD'], 'SCREEN_PASSED_FLAGS',
                np.where((pricing_flags_str != '') & np.isin(score_band, ['A', 'B']), 'SCREEN_PASSED_EXPENSIVE',
+               np.where(is_aggressive & np.isin(score_band, ['A', 'B']), 'SCREEN_PASSED_FLAGS',
                np.where(np.isin(score_band, ['A', 'B']), 'GATES_CLEARED',
-               np.where(score_band == 'C', 'SCREEN_MARGINAL', 'SCREEN_FAILED'))))))
-    
+               np.where(score_band == 'C', 'SCREEN_MARGINAL', 'SCREEN_FAILED')))))))
+
     reject_reason = np.where(decision == 'SCREEN_FAILED', np.where(critical >= 1,
                             "Critical flag detected", "Multiple major flags"),
-                   np.where(decision == 'SCREEN_PASSED_FLAGS', "Quality concerns",
+                   np.where(decision == 'SCREEN_PASSED_FLAGS',
+                            np.where(is_aggressive & (quality_severity < CONFIG['SEVERITY_MINOR_THRESHOLD']),
+                                     "Aggressive earnings quality", "Quality concerns"),
                    np.where(decision == 'SCREEN_PASSED_EXPENSIVE', "Valuation concern",
                    np.where(decision == 'GATES_CLEARED', "None",
                    np.where(decision == 'SCREEN_MARGINAL', "Marginal score", "Low score")))))
