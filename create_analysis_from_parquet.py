@@ -100,6 +100,8 @@ COLS = {
     'PAT': 'Profit after tax',
     'PAT_LAST_YEAR': 'Profit after tax last year',
     'PAT_PRECEDING_YEAR': 'Profit after tax preceding year',
+    'PBT_LAST_YEAR': 'Profit before tax last year',
+    'PBT_PRECEDING_YEAR': 'Profit before tax preceding year',
     'OTHER_INCOME': 'Other income',
 
     # Quarterly Profit (for TTM PAT)
@@ -111,22 +113,29 @@ COLS = {
     # Cash Flow Metrics
     'CFO_LAST_YEAR': 'Cash from operations last year',
     'CFO_PRECEDING_YEAR': 'Cash from operations preceding year',
-    'FCF_LAST_YEAR': 'Free cash flow last year',
     'CFO_3Y_CUMULATIVE': 'Operating cash flow 3years',
     'CFO_5Y_CUMULATIVE': 'Operating cash flow 5years',
     'CFO_7Y_CUMULATIVE': 'Operating cash flow 7years',
     'CFO_10Y_CUMULATIVE': 'Operating cash flow 10years',
+    'FCF_LAST_YEAR': 'Free cash flow last year',
+    'FCF_PRECEDING_YEAR': 'Free cash flow preceding year',
     'FCF_3Y_CUMULATIVE': 'Free cash flow 3years',
     'FCF_5Y_CUMULATIVE': 'Free cash flow 5years',
     'FCF_7Y_CUMULATIVE': 'Free cash flow 7years',
     'FCF_10Y_CUMULATIVE': 'Free cash flow 10years',
     'CFI_LAST_YEAR': 'Cash from investing last year',
+    'CFI_PRECEDING_YEAR': 'Cash from investing preceding year',
+    'CFI_3Y_CUMULATIVE': 'Investing cash flow 3years',
+    'CFI_5Y_CUMULATIVE': 'Investing cash flow 5years',
+    'CFF_LAST_YEAR': 'Cash from financing last year',
+    'CFF_PRECEDING_YEAR': 'Cash from financing preceding year',
     
     # Balance Sheet Metrics
     'TOTAL_ASSETS': 'Total Assets',
     'WORKING_CAPITAL': 'Working capital',
     'WORKING_CAPITAL_PY': 'Working capital preceding year',
     'DEBT': 'Debt',
+    'DEBT_PY': 'Debt preceding year',
     'DEBT_3Y_BACK': 'Debt 3Years back',
     'DEBT_5Y_BACK': 'Debt 5Years back',
     'RESERVES': 'Reserves',
@@ -134,6 +143,8 @@ COLS = {
     'CURRENT_LIABILITIES': 'Current liabilities',
     'NET_BLOCK': 'Net block',
     'GROSS_BLOCK': 'Gross block',
+    'GROSS_BLOCK_PY': 'Gross block preceding year',
+    'NET_BLOCK_PY': 'Net block preceding year',
     'CONTINGENT_LIABILITIES': 'Contingent liabilities',
     'CASH_EQUIVALENTS': 'Cash Equivalents',
     'TRADE_PAYABLES': 'Trade Payables',
@@ -167,6 +178,15 @@ COLS = {
     'QOQ_PROFITS': 'QoQ Profits',
     'YOY_Q_SALES': 'YOY Quarterly sales growth',
     'YOY_Q_PROFIT': 'YOY Quarterly profit growth',
+    'OPM_Q_LATEST': 'OPM latest quarter',
+    'OPM_Q_PRECEDING': 'OPM preceding quarter',
+    'OPM_Q_YOY': 'OPM preceding year quarter',
+    'SALES_Q_LATEST': 'Sales latest quarter',
+    'SALES_Q_PRECEDING': 'Sales preceding quarter',
+    'SALES_Q_YOY': 'Sales preceding year quarter',
+    'OP_Q_LATEST': 'Operating profit latest quarter',
+    'OP_Q_PRECEDING': 'Operating profit preceding quarter',
+    'OP_Q_YOY': 'Operating profit preceding year quarter',
     
     # Shareholding Metrics
     'PROMOTER_HOLDING': 'Promoter holding',
@@ -188,6 +208,15 @@ COLS = {
     'BOOK_VALUE_3Y_BACK': 'Book value 3years back',
     'BOOK_VALUE_5Y_BACK': 'Book value 5years back',
     'BOOK_VALUE_10Y_BACK': 'Book value 10years back',
+
+    # User Ratios (pre-computed by screener.in)
+    'CROIC': 'CROIC',
+    'PRICE_TO_FCF': 'Price to Free Cash Flow',
+    'NCAVPS': 'NCAVPS',
+    'DEBT_CAPACITY': 'Debt Capacity',
+    'WC_TO_SALES': 'Working Capital to Sales ratio',
+    'PB_X_PE': 'PB X PE',
+    'PRICE_TO_CF': 'Price to Cash Flow',
 }
 
 # Column aliases for handling typos/variants in source data
@@ -242,6 +271,7 @@ CONFIG = {
     'CFO_PAT_EARNINGS_QUALITY_THRESHOLD': 0.8,
     'PROMOTER_BUY_THRESHOLD': 3.0,
     'PROMOTER_SELL_THRESHOLD': -3.0,
+    'ETR_LOW_THRESHOLD': 0.15,  # 15% — suspicious when statutory rate is ~25%
 }
 
 # ── Scoring Bins for pd.cut vectorization ───────────────────────────────────
@@ -286,6 +316,9 @@ STRUCTURAL_RED_FLAGS = {
     "RISING_DEBT": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Financial risk increasing"},
     "WC_DIVERGENCE": {"severity": "MINOR", "weight": 0.5, "meaning": "Working capital growing much faster than sales"},
     "NPM_OPM_DIVERGENCE": {"severity": "MAJOR", "weight": 1.0, "meaning": "Bottom line improving faster than operating performance"},
+    "LOW_EFFECTIVE_TAX": {"severity": "MINOR", "weight": 0.5, "meaning": "Effective tax rate persistently below statutory rate—may indicate tax havens, deferred liabilities, or creative accounting"},
+    "ASSET_MILKING": {"severity": "MINOR", "weight": 0.5, "meaning": "Capex well below depreciation—company under-investing in its asset base"},
+    "DEBT_SPIKE_1YR": {"severity": "MAJOR", "weight": 1.0, "meaning": "Debt jumped >50% in a single year—sudden leveraging needs investigation"},
 }
 
 PRICING_RED_FLAGS = {
@@ -487,6 +520,10 @@ def build_valuation_sheet(m: pd.DataFrame) -> pd.DataFrame:
         'Market_Cap_3Yr_Back': get_col(m, 'MARKET_CAP_3Y_BACK', 'RATIOS'),
         'Market_Cap_5Yr_Back': get_col(m, 'MARKET_CAP_5Y_BACK', 'RATIOS'),
         'Market_Cap_10Yr_Back': get_col(m, 'MARKET_CAP_10Y_BACK', 'RATIOS'),
+        'Price_To_FCF': get_col(m, 'PRICE_TO_FCF', 'USER_RATIOS'),
+        'Price_To_CF': get_col(m, 'PRICE_TO_CF', 'USER_RATIOS'),
+        'PB_X_PE': get_col(m, 'PB_X_PE', 'USER_RATIOS'),
+        'NCAVPS': get_col(m, 'NCAVPS', 'USER_RATIOS'),
     })
 
 
@@ -516,6 +553,18 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
     npm_ly = pd.Series(get_col(m, 'NPM_LAST_YEAR', 'ANNUAL'), dtype=float)
     npm_py = pd.Series(get_col(m, 'NPM_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
 
+    # Effective Tax Rate: ETR = 1 - (PAT / PBT)
+    # Only compute when PBT > 1 Cr to avoid extreme ratios from near-zero denominators
+    pat_ly = pd.Series(get_col(m, 'PAT_LAST_YEAR', 'ANNUAL'), dtype=float)
+    pbt_ly = pd.Series(get_col(m, 'PBT_LAST_YEAR', 'ANNUAL'), dtype=float)
+    pbt_py = pd.Series(get_col(m, 'PBT_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
+    pat_py = pd.Series(get_col(m, 'PAT_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
+    etr_ly = pd.Series(np.where((~pd.isna(pbt_ly)) & (pbt_ly > 1), 1.0 - safe_div(pat_ly, pbt_ly), np.nan), dtype=float)
+    etr_py = pd.Series(np.where((~pd.isna(pbt_py)) & (pbt_py > 1), 1.0 - safe_div(pat_py, pbt_py), np.nan), dtype=float)
+    # Clamp to [-1, 1] range — anything outside is data noise
+    etr_ly = etr_ly.clip(-1.0, 1.0)
+    etr_py = etr_py.clip(-1.0, 1.0)
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
         'Business_Quality_Score': bq_score,
@@ -541,6 +590,9 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
         'Asset_Turnover': asset_turnover,
         'NPM_Latest': npm_current, 'NPM_Last_Year': npm_ly, 'NPM_Preceding_Year': npm_py,
         'Other_Income_Pct_PAT': safe_div(np.abs(other_inc) * 100, np.abs(pat)),
+        'ETR_Last_Year': np.round(etr_ly * 100, 1),
+        'ETR_Preceding_Year': np.round(etr_py * 100, 1),
+        'CROIC': get_col(m, 'CROIC', 'USER_RATIOS'),
     })
 
 
@@ -592,19 +644,46 @@ def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
     wc_growth = safe_div(wc - wc_py, np.abs(wc_py)) * 100
     rev_growth = safe_div(sales - sales_ly, np.abs(sales_ly)) * 100
 
+    # FCF trend (using preceding year data)
+    fcf = pd.Series(get_col(m, 'FCF_LAST_YEAR', 'CASHFLOW'), dtype=float)
+    fcf_py = pd.Series(get_col(m, 'FCF_PRECEDING_YEAR', 'CASHFLOW'), dtype=float)
+
+    # Cash from financing (positive = raising capital, negative = returning capital)
+    cff = pd.Series(get_col(m, 'CFF_LAST_YEAR', 'CASHFLOW'), dtype=float)
+    cff_py = pd.Series(get_col(m, 'CFF_PRECEDING_YEAR', 'CASHFLOW'), dtype=float)
+
+    # Investing cash flow cumulatives
+    cfi = pd.Series(get_col(m, 'CFI_LAST_YEAR', 'CASHFLOW'), dtype=float)
+    cfi_py = pd.Series(get_col(m, 'CFI_PRECEDING_YEAR', 'CASHFLOW'), dtype=float)
+    cfi_3yr = pd.Series(get_col(m, 'CFI_3Y_CUMULATIVE', 'CASHFLOW'), dtype=float)
+    cfi_5yr = pd.Series(get_col(m, 'CFI_5Y_CUMULATIVE', 'CASHFLOW'), dtype=float)
+
+    # CFI/CFO ratio: how much of operating cash is reinvested
+    cfi_cfo_ratio = safe_div(np.abs(cfi_3yr), cfo_3yr)
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
         'CFO_Latest': cfo, 'PAT_Latest': pat, 'PAT_TTM': pat_ttm, 'PAT_Annual': pat_annual,
         'CFO_PAT_Latest': cfo_pat, 'CFO_PAT_3Yr_Avg': cfo_pat_3yr_avg,
         'Positive_CFO_Years_3Yr': pos_cfo_count, 'CFO_Year3_Inferred': cfo_yr3_inferred,
         'Worst_Year_CFO_PAT': worst_yr,
-        'FCF_Latest': get_col(m, 'FCF_LAST_YEAR', 'CASHFLOW'), 'CFO_Preceding_Year': cfo_py,
+        'FCF_Latest': fcf, 'FCF_Preceding_Year': fcf_py,
+        'FCF_Trend': np.where(pd.isna(fcf) | pd.isna(fcf_py), 'N/A',
+                     np.where(fcf > fcf_py * 1.1, 'IMPROVING', np.where(fcf < fcf_py * 0.9, 'DECLINING', 'STABLE'))),
+        'CFO_Preceding_Year': cfo_py,
         'CFO_Trend': np.where(pd.isna(cfo) | pd.isna(cfo_py), 'N/A',
                      np.where(cfo > cfo_py * 1.1, 'IMPROVING', np.where(cfo < cfo_py * 0.9, 'DECLINING', 'STABLE'))),
         'CFO_3Yr_Cumulative': cfo_3yr, 'CFO_5Yr_Cumulative': cfo_5yr,
         'CFROA': safe_div(cfo, total_assets), 'Accruals': safe_div(pat - cfo, total_assets),
         'WC_Growth_Pct': wc_growth, 'Rev_Growth_Pct': rev_growth,
         'WC_Rev_Growth_Ratio': safe_div(wc_growth, rev_growth),
+        'CFF_Latest': cff, 'CFF_Preceding_Year': cff_py,
+        'CFF_Signal': np.where(pd.isna(cff), 'N/A',
+                      np.where(cff > 0, 'RAISING_CAPITAL', np.where(cff < 0, 'RETURNING_CAPITAL', 'NEUTRAL'))),
+        'CFI_Latest': cfi, 'CFI_Preceding_Year': cfi_py,
+        'CFI_3Yr_Cumulative': cfi_3yr, 'CFI_5Yr_Cumulative': cfi_5yr,
+        'CFI_CFO_Ratio_3Yr': np.round(cfi_cfo_ratio, 2),
+        'WC_To_Sales_Ratio': get_col(m, 'WC_TO_SALES', 'USER_RATIOS'),
     })
 
 
@@ -627,12 +706,27 @@ def build_leverage_sheet(m: pd.DataFrame) -> pd.DataFrame:
                     vectorized_score(pd.Series(current_ratio), SCORING_BINS['CURRENT_RATIO']) +
                     pd.Series(np.where(debt_trend == 'ZERO_DEBT', 25, np.where(debt_trend == 'DECLINING', 22,
                               np.where(debt_trend == 'STABLE', 15, np.where(debt_trend == 'RISING', 5, 8)))), dtype=float))
-    
+
+    # Capex vs Depreciation analysis
+    gross_block = pd.Series(get_col(m, 'GROSS_BLOCK', 'BALANCE'), dtype=float)
+    gross_block_py = pd.Series(get_col(m, 'GROSS_BLOCK_PY', 'BALANCE'), dtype=float)
+    net_block = pd.Series(get_col(m, 'NET_BLOCK', 'BALANCE'), dtype=float)
+    net_block_py = pd.Series(get_col(m, 'NET_BLOCK_PY', 'BALANCE'), dtype=float)
+    capex = gross_block - gross_block_py
+    depreciation = capex - (net_block - net_block_py)
+    capex_to_dep = safe_div(capex, depreciation)
+
+    # Debt preceding year for spike detection
+    debt_py = pd.Series(get_col(m, 'DEBT_PY', 'BALANCE'), dtype=float)
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
         'Debt_Equity': de, 'Interest_Coverage': ic, 'Debt_Trend': debt_trend,
         'Financial_Strength_Score': fin_strength, 'Current_Ratio': current_ratio,
-        'Total_Debt': debt, 'Debt_3Yr_Back': debt_3yr, 'Total_Assets': get_col(m, 'TOTAL_ASSETS', 'BALANCE'),
+        'Total_Debt': debt, 'Debt_3Yr_Back': debt_3yr, 'Debt_Preceding_Year': debt_py,
+        'Total_Assets': get_col(m, 'TOTAL_ASSETS', 'BALANCE'),
+        'Debt_Capacity': get_col(m, 'DEBT_CAPACITY', 'USER_RATIOS'),
+        'Capex': capex, 'Depreciation': np.round(depreciation, 1), 'Capex_To_Depreciation': np.round(capex_to_dep, 2),
     })
 
 
@@ -655,13 +749,43 @@ def build_growth_sheet(m: pd.DataFrame) -> pd.DataFrame:
                          pd.Series(np.where(pg_consistent == 'CONSISTENT', 20,
                                    np.where(pg_consistent == 'MIXED', 10, 3)), dtype=float))
     
+    # Quarterly deterioration signals
+    opm_q = pd.Series(get_col(m, 'OPM_Q_LATEST', 'QUARTERLY'), dtype=float)
+    opm_q_prev = pd.Series(get_col(m, 'OPM_Q_PRECEDING', 'QUARTERLY'), dtype=float)
+    opm_q_yoy = pd.Series(get_col(m, 'OPM_Q_YOY', 'QUARTERLY'), dtype=float)
+    sales_q = pd.Series(get_col(m, 'SALES_Q_LATEST', 'QUARTERLY'), dtype=float)
+    sales_q_yoy = pd.Series(get_col(m, 'SALES_Q_YOY', 'QUARTERLY'), dtype=float)
+    op_q = pd.Series(get_col(m, 'OP_Q_LATEST', 'QUARTERLY'), dtype=float)
+    op_q_yoy = pd.Series(get_col(m, 'OP_Q_YOY', 'QUARTERLY'), dtype=float)
+
+    # QoQ OPM change and YoY OPM change
+    opm_q_change = opm_q - opm_q_prev
+    opm_yoy_change = opm_q - opm_q_yoy
+
+    # Quarterly revenue YoY growth
+    q_rev_yoy_growth = safe_div(sales_q - sales_q_yoy, np.abs(sales_q_yoy)) * 100
+
+    # Quarterly operating profit YoY growth
+    q_op_yoy_growth = safe_div(op_q - op_q_yoy, np.abs(op_q_yoy)) * 100
+
+    # Quarterly deterioration flag: OPM falling QoQ AND YoY
+    q_deteriorating = (
+        (~pd.isna(opm_q_change)) & (~pd.isna(opm_yoy_change))
+        & (opm_q_change < -2) & (opm_yoy_change < -3)
+    )
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
         'Revenue_Growth_1Yr': safe_div(sales - sales_ly, np.abs(sales_ly)) * 100,
         'Revenue_Growth_3Yr': sales_g3, 'Profit_Growth_3Yr': profit_g3,
-        'EBITDA_Growth_3Yr': get_col(m, 'EBITDA_GROWTH_3Y', 'ANNUAL'),  # Handles typo automatically
+        'EBITDA_Growth_3Yr': get_col(m, 'EBITDA_GROWTH_3Y', 'ANNUAL'),
         'Profit_Growth_Consistency': pg_consistent, 'Growth_Durability_Score': growth_durability,
         'Total_Revenue': sales,
+        'OPM_Q_Latest': opm_q, 'OPM_QoQ_Change': np.round(opm_q_change, 1),
+        'OPM_YoY_Q_Change': np.round(opm_yoy_change, 1),
+        'Q_Rev_YoY_Growth': np.round(q_rev_yoy_growth, 1),
+        'Q_OP_YoY_Growth': np.round(q_op_yoy_growth, 1),
+        'Q_Deteriorating': np.where(q_deteriorating, 'YES', 'NO'),
     })
 
 
@@ -799,6 +923,34 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         & np.isfinite(npm_opm_gap) & (npm_opm_gap > CONFIG['NPM_OPM_GAP_THRESHOLD'])
     )
 
+    # ── Effective Tax Rate flag ──────────────────────────────────────────
+    # Flag only when BOTH years show low ETR on profitable companies
+    etr_ly = quality_df['ETR_Last_Year'].values.astype(float) / 100.0  # convert back to ratio
+    etr_py = quality_df['ETR_Preceding_Year'].values.astype(float) / 100.0
+    flag_low_effective_tax = (
+        (~np.isnan(etr_ly)) & (~np.isnan(etr_py))
+        & (etr_ly < CONFIG['ETR_LOW_THRESHOLD']) & (etr_py < CONFIG['ETR_LOW_THRESHOLD'])
+        & (etr_ly >= 0) & (etr_py >= 0)  # exclude negative ETR (loss-makers)
+    )
+
+    # ── Asset Milking flag ────────────────────────────────────────────────
+    # Capex < 50% of Depreciation = company not reinvesting in its asset base
+    # Only flag when depreciation > 5 Cr (company has meaningful fixed assets)
+    capex_to_dep = leverage_df['Capex_To_Depreciation'].values.astype(float)
+    depreciation = leverage_df['Depreciation'].values.astype(float)
+    flag_asset_milking = (
+        (~np.isnan(capex_to_dep)) & (~np.isnan(depreciation))
+        & (depreciation > 5) & (capex_to_dep < 0.5) & (capex_to_dep >= 0)
+    )
+
+    # ── Debt spike detection ─────────────────────────────────────────────
+    # Debt increased > 50% in just 1 year AND absolute increase > 50 Cr
+    debt_py = leverage_df['Debt_Preceding_Year'].values.astype(float)
+    flag_debt_spike_1yr = (
+        (~np.isnan(debt)) & (~np.isnan(debt_py)) & (debt_py > 0)
+        & (debt > debt_py * 1.5) & ((debt - debt_py) > 50)
+    )
+
     # Calculate all flags
     structural_flags = {
         'FLAG_LOW_ROE': (~np.isnan(roe)) & (roe < CONFIG['ROE_LOW_THRESHOLD']),
@@ -814,6 +966,9 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
                             ((~np.isnan(debt)) & (debt_3yr == 0) & (debt > CONFIG['DEBT_MIN_NEW_THRESHOLD'])),
         'FLAG_WC_DIVERGENCE': (~np.isnan(wc_rev_ratio)) & (wc_rev_ratio > 1.5) & np.isfinite(wc_rev_ratio),
         'FLAG_NPM_OPM_DIVERGENCE': flag_npm_opm_divergence,
+        'FLAG_LOW_EFFECTIVE_TAX': flag_low_effective_tax,
+        'FLAG_ASSET_MILKING': flag_asset_milking,
+        'FLAG_DEBT_SPIKE_1YR': flag_debt_spike_1yr,
     }
     pricing_flags = {
         'FLAG_HIGH_PE': (~np.isnan(pe)) & (pe > CONFIG['PE_HIGH_THRESHOLD']),
@@ -904,6 +1059,7 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
     eq_issues += ((~np.isnan(accruals)) & (accruals > CONFIG['ACCRUALS_AGGRESSIVE_THRESHOLD'])).astype(int)
     eq_issues += structural_flags.get('FLAG_HIGH_OTHER_INCOME', np.zeros(n, dtype=bool)).astype(int)
     eq_issues += ((~np.isnan(pos_cfo_years)) & (pos_cfo_years < 2)).astype(int)
+    eq_issues += structural_flags.get('FLAG_LOW_EFFECTIVE_TAX', np.zeros(n, dtype=bool)).astype(int)
     earnings_quality_label = np.where(eq_issues >= 3, 'Aggressive',
                              np.where(eq_issues >= 1, 'Mixed', 'Clean'))
 
