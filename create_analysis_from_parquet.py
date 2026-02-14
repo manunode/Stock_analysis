@@ -481,39 +481,52 @@ def run_sanity_checks(m: pd.DataFrame) -> None:
     """Log warnings for data integrity issues that could corrupt downstream calculations."""
     pat = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
     sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
+    other_income = pd.Series(get_col(m, 'OTHER_INCOME', 'ANNUAL'), dtype=float)
     debt = pd.Series(get_col(m, 'DEBT', 'BALANCE'), dtype=float)
     roe = pd.Series(get_col(m, 'ROE', 'RATIOS'), dtype=float)
     total_assets = pd.Series(get_col(m, 'TOTAL_ASSETS', 'BALANCE'), dtype=float)
     names = m[COLS['NAME']].values
 
-    checks = []
+    warnings = []
+    info = []
 
-    # PAT > Sales is almost always a data error (or a holding company)
-    bad_pat = (~pd.isna(pat)) & (~pd.isna(sales)) & (sales > 0) & (pat > sales)
-    if bad_pat.sum() > 0:
-        examples = ', '.join(str(n) for n in names[bad_pat][:5])
-        checks.append(f"{bad_pat.sum()} stocks have PAT > Sales (e.g. {examples})")
+    # PAT > Sales: distinguish Holding Companies from data glitches
+    pat_gt_sales = (~pd.isna(pat)) & (~pd.isna(sales)) & (sales > 0) & (pat > sales)
+    if pat_gt_sales.sum() > 0:
+        # Holding Co: PAT driven by Other Income (dividends, investments)
+        holding_co = pat_gt_sales & (~pd.isna(other_income)) & (other_income > 0.8 * pat)
+        # Data glitch: PAT > Sales without Other Income to explain it
+        data_glitch = pat_gt_sales & ((pd.isna(other_income)) | (other_income < 0.5 * pat))
+
+        if holding_co.sum() > 0:
+            examples = ', '.join(str(n) for n in names[holding_co][:5])
+            info.append(f"{holding_co.sum()} likely Holding Companies (PAT > Sales from Other Income): {examples}")
+        if data_glitch.sum() > 0:
+            examples = ', '.join(str(n) for n in names[data_glitch][:5])
+            warnings.append(f"{data_glitch.sum()} stocks have PAT > Sales without supporting Other Income (likely data error): {examples}")
 
     # Negative debt
     neg_debt = (~pd.isna(debt)) & (debt < 0)
     if neg_debt.sum() > 0:
-        checks.append(f"{neg_debt.sum()} stocks have negative debt values")
+        warnings.append(f"{neg_debt.sum()} stocks have negative debt values")
 
     # Extreme ROE (|ROE| > 200%) — often indicates tiny equity base or data error
     extreme_roe = (~pd.isna(roe)) & (np.abs(roe) > 200)
     if extreme_roe.sum() > 0:
-        checks.append(f"{extreme_roe.sum()} stocks have |ROE| > 200%")
+        warnings.append(f"{extreme_roe.sum()} stocks have |ROE| > 200%")
 
     # Zero or negative total assets
     bad_assets = (~pd.isna(total_assets)) & (total_assets <= 0)
     if bad_assets.sum() > 0:
-        checks.append(f"{bad_assets.sum()} stocks have zero/negative total assets")
+        warnings.append(f"{bad_assets.sum()} stocks have zero/negative total assets")
 
-    if checks:
-        logging.warning("Data integrity checks:")
-        for c in checks:
-            logging.warning(f"  - {c}")
-    else:
+    for msg in info:
+        logging.info(f"  {msg}")
+    if warnings:
+        logging.warning("Data integrity warnings:")
+        for w in warnings:
+            logging.warning(f"  - {w}")
+    if not warnings and not info:
         logging.info("Data integrity checks: all passed")
 
 
