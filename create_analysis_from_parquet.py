@@ -1196,6 +1196,174 @@ def build_summary_sheet(analysis_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=['A', 'B', 'C'])
 
 
+def build_decision_audit_sheet(m: pd.DataFrame, analysis_df: pd.DataFrame,
+                                quality_df: pd.DataFrame, valuation_df: pd.DataFrame,
+                                leverage_df: pd.DataFrame, growth_df: pd.DataFrame,
+                                cashflow_df: pd.DataFrame, red_flags_df: pd.DataFrame,
+                                shareholding_df: pd.DataFrame) -> pd.DataFrame:
+    """Build Decision_Audit sheet: per-stock trace of how each Decision_Bucket was reached."""
+    n = len(analysis_df)
+
+    # Extract all the values we need
+    bq = analysis_df['Business_Quality_Score'].values.astype(float)
+    gd = analysis_df['Growth_Durability_Score'].values.astype(float)
+    vc = analysis_df['Valuation_Comfort_Score'].values.astype(float)
+    fs = analysis_df['Financial_Strength_Score'].values.astype(float)
+    cf = analysis_df['Cash_Flow_Score'].values.astype(float)
+    composite = analysis_df['Composite_Score'].values.astype(float)
+    band = analysis_df['Score_Band'].values
+    decision = analysis_df['Decision_Bucket'].values
+    override = analysis_df['Conviction_Override'].values
+
+    quality_severity = red_flags_df['Quality_Severity'].values.astype(float)
+    pricing_severity = red_flags_df['Pricing_Severity'].values.astype(float)
+    quality_flags = red_flags_df['Quality_Flags'].values
+    pricing_flags = red_flags_df['Pricing_Flags'].values
+    earnings_quality = red_flags_df['Earnings_Quality_Label'].values
+    cyclic_risk = red_flags_df['Cyclic_Peak_Risk'].values
+    sector_adj = red_flags_df['Sector_Adjustments'].values
+
+    # Build per-stock strings using loops (audit trail needs rich formatting)
+    score_breakdown = np.empty(n, dtype=object)
+    severity_gate = np.empty(n, dtype=object)
+    pricing_gate = np.empty(n, dtype=object)
+    earnings_gate = np.empty(n, dtype=object)
+    score_gate = np.empty(n, dtype=object)
+    override_col = np.empty(n, dtype=object)
+    flags_detail = np.empty(n, dtype=object)
+    narrative = np.empty(n, dtype=object)
+
+    for i in range(n):
+        # 1. Score breakdown
+        score_breakdown[i] = (
+            f"BQ:{bq[i]:.0f}(35%) + GD:{gd[i]:.0f}(25%) + "
+            f"VC:{vc[i]:.0f}(20%) + FS:{fs[i]:.0f}(10%) + "
+            f"CF:{cf[i]:.0f}(10%) = {composite[i]:.1f} [{band[i]}]"
+        )
+
+        # 2. Trace through the decision cascade
+        sev = quality_severity[i]
+        psev = pricing_severity[i]
+        qf = quality_flags[i] if pd.notna(quality_flags[i]) else ''
+        pf = pricing_flags[i] if pd.notna(pricing_flags[i]) else ''
+        eq = earnings_quality[i] if pd.notna(earnings_quality[i]) else ''
+        b = band[i]
+        d = decision[i]
+        ov = override[i] if pd.notna(override[i]) and override[i] != 'None' else ''
+
+        # Gate 1: Severity check
+        if sev >= CONFIG['SEVERITY_FAILED_THRESHOLD']:
+            severity_gate[i] = f"Severity {sev:.1f} >= {CONFIG['SEVERITY_FAILED_THRESHOLD']:.1f} -> SCREEN_FAILED"
+            gate_stopped = 'severity_failed'
+        elif sev >= CONFIG['SEVERITY_FLAGS_THRESHOLD']:
+            severity_gate[i] = f"Severity {sev:.1f} >= {CONFIG['SEVERITY_FLAGS_THRESHOLD']:.1f} -> SCREEN_PASSED_FLAGS"
+            gate_stopped = 'severity_flags'
+        elif sev >= CONFIG['SEVERITY_MINOR_THRESHOLD']:
+            severity_gate[i] = f"Severity {sev:.1f} >= {CONFIG['SEVERITY_MINOR_THRESHOLD']:.1f} -> SCREEN_PASSED_FLAGS"
+            gate_stopped = 'severity_minor'
+        else:
+            severity_gate[i] = f"Severity {sev:.1f} < {CONFIG['SEVERITY_MINOR_THRESHOLD']:.1f} -> PASSED"
+            gate_stopped = None
+
+        # Gate 2: Pricing flags (only reached if severity passed)
+        if gate_stopped:
+            pricing_gate[i] = "Not reached (stopped at severity gate)"
+        elif pf and b in ('A', 'B'):
+            pricing_gate[i] = f"Flags [{pf}] + Band {b} -> SCREEN_PASSED_EXPENSIVE"
+            gate_stopped = 'pricing'
+        elif pf:
+            pricing_gate[i] = f"Flags [{pf}] present but Band {b} not A/B -> continued"
+        else:
+            pricing_gate[i] = "No pricing flags -> PASSED"
+
+        # Gate 3: Earnings quality (only reached if pricing passed)
+        if gate_stopped and gate_stopped != 'pricing':
+            earnings_gate[i] = "Not reached (stopped at severity gate)"
+        elif gate_stopped == 'pricing':
+            earnings_gate[i] = "Not reached (stopped at pricing gate)"
+        elif eq == 'Aggressive' and b in ('A', 'B'):
+            earnings_gate[i] = f"Aggressive earnings + Band {b} -> SCREEN_PASSED_FLAGS"
+            gate_stopped = 'earnings'
+        elif eq == 'Aggressive':
+            earnings_gate[i] = f"Aggressive earnings but Band {b} not A/B -> continued"
+        else:
+            earnings_gate[i] = f"Earnings quality: {eq} -> PASSED"
+
+        # Gate 4: Score band (only reached if all prior gates passed)
+        if gate_stopped:
+            score_gate[i] = f"Not reached (stopped at {'severity' if 'severity' in str(gate_stopped) else gate_stopped} gate)"
+        elif b in ('A', 'B'):
+            score_gate[i] = f"Band {b} (score {composite[i]:.1f}) -> GATES_CLEARED"
+        elif b == 'C':
+            score_gate[i] = f"Band C (score {composite[i]:.1f}) -> SCREEN_MARGINAL"
+        else:
+            score_gate[i] = f"Band {b} (score {composite[i]:.1f}) -> SCREEN_FAILED"
+
+        # Override
+        if ov:
+            override_col[i] = f"{ov} -> {d}"
+        else:
+            override_col[i] = "No override"
+
+        # Active flags with weights
+        flag_parts = []
+        if qf:
+            for f in qf.split(', '):
+                defn = RED_FLAG_DEFINITIONS.get(f, {})
+                flag_parts.append(f"{f}({defn.get('severity', '?')},{defn.get('weight', '?')})")
+        if pf:
+            for f in pf.split(', '):
+                defn = RED_FLAG_DEFINITIONS.get(f, {})
+                flag_parts.append(f"{f}({defn.get('severity', '?')},{defn.get('weight', '?')})")
+        flags_detail[i] = ' | '.join(flag_parts) if flag_parts else 'No flags'
+
+        # Full narrative
+        parts = [f"Composite {composite[i]:.1f} (Band {b})."]
+
+        if sev > 0:
+            parts.append(f"Quality severity {sev:.1f} from: {qf}.")
+        else:
+            parts.append("No quality flags.")
+
+        if psev > 0:
+            parts.append(f"Pricing severity {psev:.1f} from: {pf}.")
+
+        if eq != 'Clean':
+            parts.append(f"Earnings quality: {eq}.")
+
+        sa = sector_adj[i] if pd.notna(sector_adj[i]) and sector_adj[i] else ''
+        if sa:
+            parts.append(f"Sector adjustments: {sa}.")
+
+        cr = cyclic_risk[i] if pd.notna(cyclic_risk[i]) else 'LOW'
+        if cr != 'LOW':
+            parts.append(f"Cyclic peak risk: {cr}.")
+
+        if ov:
+            parts.append(f"Override: {ov}.")
+
+        parts.append(f"Final: {d}.")
+        narrative[i] = ' '.join(parts)
+
+    return pd.DataFrame({
+        'ISIN': analysis_df['ISIN'].values,
+        'NSE_Code': analysis_df['NSE_Code'].values,
+        'BSE_Code': analysis_df['BSE_Code'].values,
+        'Decision_Bucket': decision,
+        'Composite_Score': composite,
+        'Score_Breakdown': score_breakdown,
+        'Gate_1_Severity': severity_gate,
+        'Gate_2_Pricing': pricing_gate,
+        'Gate_3_Earnings_Quality': earnings_gate,
+        'Gate_4_Score_Band': score_gate,
+        'Override_Applied': override_col,
+        'Active_Flags_Detail': flags_detail,
+        'Earnings_Quality': earnings_quality,
+        'Cyclic_Peak_Risk': cyclic_risk,
+        'Decision_Narrative': narrative,
+    })
+
+
 def format_excel(writer: pd.ExcelWriter, sheets: Dict[str, pd.DataFrame]) -> None:
     """Apply formatting."""
     wb = writer.book
@@ -1208,9 +1376,10 @@ def format_excel(writer: pd.ExcelWriter, sheets: Dict[str, pd.DataFrame]) -> Non
     for name, df in sheets.items():
         ws = writer.sheets[name]
         for i, c in enumerate(df.columns): ws.write(0, i, c, hdr)
+        max_width = 80 if name == 'Decision_Audit' else 30
         for i, c in enumerate(df.columns):
             mx = max(len(str(c)), df[c].fillna('').astype(str).str.len().max() if len(df) > 0 else 0)
-            ws.set_column(i, i, min(mx + 2, 30))
+            ws.set_column(i, i, min(mx + 2, max_width))
         ws.freeze_panes(1, 1)
         if name == 'Analysis' and 'Decision_Bucket' in df.columns:
             bc = df.columns.get_loc('Decision_Bucket')
@@ -1246,15 +1415,17 @@ def main():
     dividends_df = build_dividends_sheet(merged)
     red_flags_df = build_red_flags_sheet(merged, quality_df, cashflow_df, leverage_df, valuation_df, growth_df)
     analysis_df = build_analysis_sheet(merged, quality_df, valuation_df, leverage_df, growth_df, cashflow_df, red_flags_df, shareholding_df)
+    decision_audit_df = build_decision_audit_sheet(merged, analysis_df, quality_df, valuation_df, leverage_df, growth_df, cashflow_df, red_flags_df, shareholding_df)
     summary_df = build_summary_sheet(analysis_df)
-    
+
     sort_idx = analysis_df['Composite_Score'].astype(float).argsort()[::-1]
     analysis_df = analysis_df.iloc[sort_idx].reset_index(drop=True)
-    sheet_dfs = {n: df.iloc[sort_idx].reset_index(drop=True) for n, df in 
+    sheet_dfs = {n: df.iloc[sort_idx].reset_index(drop=True) for n, df in
                  {'Master': master_df, 'Valuation': valuation_df, 'Quality': quality_df, 'Cash_Flow': cashflow_df,
                   'Leverage': leverage_df, 'Growth': growth_df, 'Shareholding': shareholding_df,
-                  'Neglected_Firm': neglected_df, 'Dividends': dividends_df, 'Red_Flags': red_flags_df}.items()}
-    
+                  'Neglected_Firm': neglected_df, 'Dividends': dividends_df, 'Red_Flags': red_flags_df,
+                  'Decision_Audit': decision_audit_df}.items()}
+
     all_sheets = {'Analysis': analysis_df, **sheet_dfs, 'Summary': summary_df}
     with pd.ExcelWriter(args.output, engine='xlsxwriter') as writer:
         for name, df in all_sheets.items():
