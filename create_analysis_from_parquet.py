@@ -1287,6 +1287,88 @@ def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df
     })
 
 
+def add_peer_ranking(analysis_df: pd.DataFrame, quality_df: pd.DataFrame,
+                     valuation_df: pd.DataFrame, leverage_df: pd.DataFrame,
+                     cashflow_df: pd.DataFrame) -> pd.DataFrame:
+    """Add percentile-based peer ranking WITHIN survivors only.
+
+    Stage 1-2 (absolute filters) already happened via Decision_Bucket.
+    This is Stage 3: relative ranking among qualified stocks.
+    Percentiles on the full universe are dangerous. Percentiles on survivors are powerful.
+    """
+    # Identify survivors: stocks that passed the absolute filter
+    survivor_buckets = {'GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE', 'CONTRARIAN_BET'}
+    is_survivor = analysis_df['Decision_Bucket'].isin(survivor_buckets)
+    n = len(analysis_df)
+
+    if is_survivor.sum() < 3:
+        # Too few survivors to rank meaningfully
+        analysis_df['Peer_Rank'] = np.nan
+        analysis_df['Peer_Percentile'] = np.nan
+        analysis_df['Peer_Rank_Breakdown'] = ''
+        return analysis_df
+
+    # Extract raw fundamentals (not bin-scored values — use actual numbers)
+    roe = quality_df['ROE_Latest'].values.astype(float)
+    roce = quality_df['ROCE_Latest'].values.astype(float)
+    cfo_pat = cashflow_df['CFO_PAT_3Yr_Avg'].values.astype(float)
+    de = leverage_df['Debt_Equity'].values.astype(float)
+    pe_vs_ind = valuation_df['PE_Vs_Industry'].values.astype(float)
+
+    # Build a DataFrame of survivors only for percentile ranking
+    survivor_idx = np.where(is_survivor)[0]
+    survivor_data = pd.DataFrame({
+        'idx': survivor_idx,
+        'ROE': roe[survivor_idx],
+        'ROCE': roce[survivor_idx],
+        'CFO_PAT': cfo_pat[survivor_idx],
+        'DE': de[survivor_idx],
+        'PE_Vs_Ind': pe_vs_ind[survivor_idx],
+    })
+
+    # Percentile rank within survivors (higher = better for ROE/ROCE/CFO_PAT, lower = better for DE/PE)
+    roe_pctile = survivor_data['ROE'].rank(pct=True, na_option='bottom')
+    roce_pctile = survivor_data['ROCE'].rank(pct=True, na_option='bottom')
+    cfo_pctile = survivor_data['CFO_PAT'].rank(pct=True, na_option='bottom')
+    de_pctile = 1.0 - survivor_data['DE'].rank(pct=True, na_option='top')  # invert: low debt = high rank
+    val_pctile = 1.0 - survivor_data['PE_Vs_Ind'].rank(pct=True, na_option='top')  # invert: cheap = high rank
+
+    # Weighted composite: quality-heavy (this is a quality-first screener)
+    # ROE 25% + ROCE 25% + CFO/PAT 25% + Low Debt 10% + Cheap vs Industry 15%
+    peer_score = (0.25 * roe_pctile + 0.25 * roce_pctile + 0.25 * cfo_pctile +
+                  0.10 * de_pctile + 0.15 * val_pctile)
+
+    # Rank: 1 = best survivor
+    peer_rank = peer_score.rank(ascending=False, method='min').astype(int)
+
+    # Build breakdown string
+    breakdown = []
+    for i in range(len(survivor_data)):
+        breakdown.append(
+            f"ROE:{roe_pctile.iloc[i]*100:.0f}p "
+            f"ROCE:{roce_pctile.iloc[i]*100:.0f}p "
+            f"CFO:{cfo_pctile.iloc[i]*100:.0f}p "
+            f"Debt:{de_pctile.iloc[i]*100:.0f}p "
+            f"ValRel:{val_pctile.iloc[i]*100:.0f}p"
+        )
+
+    # Map back to full DataFrame
+    analysis_df['Peer_Rank'] = np.nan
+    analysis_df['Peer_Percentile'] = np.nan
+    analysis_df['Peer_Rank_Breakdown'] = ''
+
+    for j, orig_idx in enumerate(survivor_idx):
+        analysis_df.at[orig_idx, 'Peer_Rank'] = peer_rank.iloc[j]
+        analysis_df.at[orig_idx, 'Peer_Percentile'] = np.round(peer_score.iloc[j] * 100, 1)
+        analysis_df.at[orig_idx, 'Peer_Rank_Breakdown'] = breakdown[j]
+
+    survivor_count = is_survivor.sum()
+    logging.info(f"Peer ranking: {survivor_count} survivors ranked "
+                 f"(GATES_CLEARED + SCREEN_PASSED_EXPENSIVE + CONTRARIAN_BET)")
+
+    return analysis_df
+
+
 def build_summary_sheet(analysis_df: pd.DataFrame) -> pd.DataFrame:
     """Build summary sheet."""
     total = len(analysis_df)
@@ -1524,6 +1606,7 @@ def main():
     dividends_df = build_dividends_sheet(merged)
     red_flags_df = build_red_flags_sheet(merged, quality_df, cashflow_df, leverage_df, valuation_df, growth_df)
     analysis_df = build_analysis_sheet(merged, quality_df, valuation_df, leverage_df, growth_df, cashflow_df, red_flags_df, shareholding_df)
+    analysis_df = add_peer_ranking(analysis_df, quality_df, valuation_df, leverage_df, cashflow_df)
     decision_audit_df = build_decision_audit_sheet(merged, analysis_df, quality_df, valuation_df, leverage_df, growth_df, cashflow_df, red_flags_df, shareholding_df)
     summary_df = build_summary_sheet(analysis_df)
 
