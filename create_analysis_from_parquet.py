@@ -327,6 +327,7 @@ PRICING_RED_FLAGS = {
     "HIGH_EV_EBITDA": {"severity": "MINOR", "weight": 0.5, "meaning": "Expensive on cash flow basis"},
     "NEGATIVE_EBITDA": {"severity": "CRITICAL", "weight": 2.0, "meaning": "Negative operating profit before depreciation"},
     "HIGH_PBV_ROE": {"severity": "MINOR", "weight": 0.5, "meaning": "Price implies returns company cannot deliver"},
+    "EXPENSIVE_VS_INDUSTRY": {"severity": "MINOR", "weight": 0.5, "meaning": "PE and PBV both >2x industry median—expensive relative to sector peers"},
 }
 
 RED_FLAG_DEFINITIONS = {**STRUCTURAL_RED_FLAGS, **PRICING_RED_FLAGS}
@@ -476,6 +477,46 @@ def merge_all(dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     return merged
 
 
+def run_sanity_checks(m: pd.DataFrame) -> None:
+    """Log warnings for data integrity issues that could corrupt downstream calculations."""
+    pat = pd.Series(get_col(m, 'PAT', 'ANNUAL'), dtype=float)
+    sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
+    debt = pd.Series(get_col(m, 'DEBT', 'BALANCE'), dtype=float)
+    roe = pd.Series(get_col(m, 'ROE', 'RATIOS'), dtype=float)
+    total_assets = pd.Series(get_col(m, 'TOTAL_ASSETS', 'BALANCE'), dtype=float)
+    names = m[COLS['NAME']].values
+
+    checks = []
+
+    # PAT > Sales is almost always a data error (or a holding company)
+    bad_pat = (~pd.isna(pat)) & (~pd.isna(sales)) & (sales > 0) & (pat > sales)
+    if bad_pat.sum() > 0:
+        examples = ', '.join(str(n) for n in names[bad_pat][:5])
+        checks.append(f"{bad_pat.sum()} stocks have PAT > Sales (e.g. {examples})")
+
+    # Negative debt
+    neg_debt = (~pd.isna(debt)) & (debt < 0)
+    if neg_debt.sum() > 0:
+        checks.append(f"{neg_debt.sum()} stocks have negative debt values")
+
+    # Extreme ROE (|ROE| > 200%) — often indicates tiny equity base or data error
+    extreme_roe = (~pd.isna(roe)) & (np.abs(roe) > 200)
+    if extreme_roe.sum() > 0:
+        checks.append(f"{extreme_roe.sum()} stocks have |ROE| > 200%")
+
+    # Zero or negative total assets
+    bad_assets = (~pd.isna(total_assets)) & (total_assets <= 0)
+    if bad_assets.sum() > 0:
+        checks.append(f"{bad_assets.sum()} stocks have zero/negative total assets")
+
+    if checks:
+        logging.warning("Data integrity checks:")
+        for c in checks:
+            logging.warning(f"  - {c}")
+    else:
+        logging.info("Data integrity checks: all passed")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SHEET BUILDING FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -494,7 +535,7 @@ def build_master_sheet(m: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_valuation_sheet(m: pd.DataFrame) -> pd.DataFrame:
-    """Build valuation metrics sheet."""
+    """Build valuation metrics sheet with industry-relative valuation."""
     pe, pbv = get_col(m, 'PE', 'RATIOS'), get_col(m, 'PBV', 'RATIOS')
     val_comfort = (vectorized_score(pd.Series(pe), SCORING_BINS['PE']) +
                    vectorized_score(pd.Series(pbv), SCORING_BINS['PBV']) +
@@ -503,11 +544,38 @@ def build_valuation_sheet(m: pd.DataFrame) -> pd.DataFrame:
     val_band = np.where(pd.isna(val_comfort), 'N/A',
                np.where(val_comfort >= 70, 'CHEAP', np.where(val_comfort >= 50, 'FAIR',
                np.where(val_comfort >= 30, 'EXPENSIVE', 'VERY_EXPENSIVE'))))
+
+    # Industry-relative valuation: PE and PBV as ratio to industry median
+    # PE=30 is cheap for FMCG (industry PE 50) but expensive for Steel (industry PE 10)
+    industry_pe = pd.Series(get_col(m, 'INDUSTRY_PE', 'RATIOS'), dtype=float)
+    industry_pbv = pd.Series(get_col(m, 'INDUSTRY_PBV', 'RATIOS'), dtype=float)
+    pe_s = pd.Series(pe, dtype=float)
+    pbv_s = pd.Series(pbv, dtype=float)
+
+    # Only compute for positive PE and positive industry PE (loss-makers excluded)
+    pe_vs_industry = pd.Series(np.where(
+        (pe_s > 0) & (industry_pe > 0), safe_div(pe_s, industry_pe), np.nan), dtype=float)
+    pbv_vs_industry = pd.Series(np.where(
+        (pbv_s > 0) & (industry_pbv > 0), safe_div(pbv_s, industry_pbv), np.nan), dtype=float)
+
+    # Combined industry-relative label: uses the average of PE and PBV ratios
+    avg_vs_industry = pd.Series(np.where(
+        pd.notna(pe_vs_industry) & pd.notna(pbv_vs_industry),
+        (pe_vs_industry + pbv_vs_industry) / 2.0,
+        np.where(pd.notna(pe_vs_industry), pe_vs_industry, pbv_vs_industry)), dtype=float)
+
+    industry_val_label = np.where(pd.isna(avg_vs_industry), 'N/A',
+                         np.where(avg_vs_industry <= 0.5, 'DISCOUNT',
+                         np.where(avg_vs_industry <= 1.0, 'FAIR',
+                         np.where(avg_vs_industry <= 1.5, 'PREMIUM', 'VERY_EXPENSIVE'))))
+
     return pd.DataFrame({
         'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
         'PE': pe, 'PBV': pbv, 'EV_EBITDA': get_col(m, 'EVEBITDA', 'USER_RATIOS'),
         'PEG': get_col(m, 'PEG_RATIO', 'USER_RATIOS'), 'Price_To_Sales': get_col(m, 'PRICE_TO_SALES', 'USER_RATIOS'),
         'Earnings_Yield': safe_div(100.0, pe), 'Valuation_Band': val_band, 'Valuation_Comfort_Score': val_comfort,
+        'PE_Vs_Industry': np.round(pe_vs_industry, 2), 'PBV_Vs_Industry': np.round(pbv_vs_industry, 2),
+        'Industry_Relative_Val': industry_val_label,
         'Market_Cap': m[COLS['MARKET_CAP']], 'LTP': m[COLS['CURRENT_PRICE']],
         'Book_Value': get_col(m, 'BOOK_VALUE', 'RATIOS'), 'Industry_PE': get_col(m, 'INDUSTRY_PE', 'RATIOS'),
         'Industry_PBV': get_col(m, 'INDUSTRY_PBV', 'RATIOS'),
@@ -608,11 +676,18 @@ def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
     sales_ly = pd.Series(get_col(m, 'SALES_LAST_YEAR', 'ANNUAL'), dtype=float)
 
     # TTM PAT from quarterly data (sum of last 4 quarters)
+    # Guard against stub periods: if any single quarter > 60% of TTM,
+    # it likely indicates a fiscal year change and the TTM sum is unreliable
     np_q1 = pd.Series(get_col(m, 'NP_Q1', 'QUARTERLY'), dtype=float)
     np_q2 = pd.Series(get_col(m, 'NP_Q2', 'QUARTERLY'), dtype=float)
     np_q3 = pd.Series(get_col(m, 'NP_Q3', 'QUARTERLY'), dtype=float)
     np_q4 = pd.Series(get_col(m, 'NP_Q4', 'QUARTERLY'), dtype=float)
-    pat_ttm = np_q1 + np_q2 + np_q3 + np_q4
+    pat_ttm_raw = np_q1 + np_q2 + np_q3 + np_q4
+    max_quarter = np.maximum(np.maximum(np.abs(np_q1.fillna(0)), np.abs(np_q2.fillna(0))),
+                             np.maximum(np.abs(np_q3.fillna(0)), np.abs(np_q4.fillna(0))))
+    ttm_abs = np.abs(pat_ttm_raw).replace(0, np.nan)
+    stub_risk = pd.notna(pat_ttm_raw) & (max_quarter > ttm_abs * 0.6)
+    pat_ttm = pd.Series(np.where(stub_risk, np.nan, pat_ttm_raw), dtype=float)
     pat = pd.Series(np.where(pd.notna(pat_ttm) & (pat_ttm != 0), pat_ttm, pat_annual), dtype=float)
 
     cfo_pat = safe_div(cfo, pat)
@@ -622,7 +697,13 @@ def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
     # 3yr CFO/PAT: average of individual year ratios (weights each year equally)
     pat_ly = pd.Series(get_col(m, 'PAT_LAST_YEAR', 'ANNUAL'), dtype=float)
     pat_py = pd.Series(get_col(m, 'PAT_PRECEDING_YEAR', 'ANNUAL'), dtype=float)
-    cfo_yr3_inferred = cfo_3yr - cfo - cfo_py  # inferred 3rd year back
+    # Infer year-3 CFO from cumulative minus known years.
+    # Guard: if inferred value is >5x the average of recent years, it's likely
+    # a restatement artifact in the cumulative data — null it out rather than propagate garbage
+    cfo_yr3_raw = cfo_3yr - cfo - cfo_py
+    avg_recent_cfo = (np.abs(cfo) + np.abs(cfo_py)) / 2.0
+    cfo_yr3_suspicious = (avg_recent_cfo > 0) & (np.abs(cfo_yr3_raw) > avg_recent_cfo * 5.0)
+    cfo_yr3_inferred = pd.Series(np.where(cfo_yr3_suspicious, np.nan, cfo_yr3_raw), dtype=float)
     r1 = pd.Series(safe_div(cfo, pat_annual), dtype=float)
     r2 = pd.Series(safe_div(cfo_py, pat_ly), dtype=float)
     r3 = pd.Series(safe_div(cfo_yr3_inferred, pat_py), dtype=float)
@@ -970,12 +1051,21 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
         'FLAG_ASSET_MILKING': flag_asset_milking,
         'FLAG_DEBT_SPIKE_1YR': flag_debt_spike_1yr,
     }
+    # Industry-relative valuation flag
+    pe_vs_ind = valuation_df['PE_Vs_Industry'].values.astype(float)
+    pbv_vs_ind = valuation_df['PBV_Vs_Industry'].values.astype(float)
+    flag_expensive_vs_industry = (
+        (~np.isnan(pe_vs_ind)) & (~np.isnan(pbv_vs_ind))
+        & (pe_vs_ind > 2.0) & (pbv_vs_ind > 2.0)
+    )
+
     pricing_flags = {
         'FLAG_HIGH_PE': (~np.isnan(pe)) & (pe > CONFIG['PE_HIGH_THRESHOLD']),
         'FLAG_NEGATIVE_PE': (~np.isnan(pe)) & (pe < 0),
         'FLAG_HIGH_EV_EBITDA': (~np.isnan(ev_ebitda)) & (ev_ebitda > CONFIG['EV_EBITDA_HIGH_THRESHOLD']),
         'FLAG_NEGATIVE_EBITDA': (~np.isnan(ev_ebitda)) & (ev_ebitda < 0),
         'FLAG_HIGH_PBV_ROE': (~np.isnan(pbv)) & (~np.isnan(roe)) & (roe > 0) & (pbv > roe / 2),
+        'FLAG_EXPENSIVE_VS_INDUSTRY': flag_expensive_vs_industry,
     }
     all_flags = {**structural_flags, **pricing_flags}
 
@@ -1222,6 +1312,7 @@ def build_decision_audit_sheet(m: pd.DataFrame, analysis_df: pd.DataFrame,
     earnings_quality = red_flags_df['Earnings_Quality_Label'].values
     cyclic_risk = red_flags_df['Cyclic_Peak_Risk'].values
     sector_adj = red_flags_df['Sector_Adjustments'].values
+    industry_val = valuation_df['Industry_Relative_Val'].values
 
     # Build per-stock strings using loops (audit trail needs rich formatting)
     score_breakdown = np.empty(n, dtype=object)
@@ -1236,9 +1327,9 @@ def build_decision_audit_sheet(m: pd.DataFrame, analysis_df: pd.DataFrame,
     for i in range(n):
         # 1. Score breakdown
         score_breakdown[i] = (
-            f"BQ:{bq[i]:.0f}(35%) + GD:{gd[i]:.0f}(25%) + "
-            f"VC:{vc[i]:.0f}(20%) + FS:{fs[i]:.0f}(10%) + "
-            f"CF:{cf[i]:.0f}(10%) = {composite[i]:.1f} [{band[i]}]"
+            f"Quality:{bq[i]:.0f}(35%) + Growth:{gd[i]:.0f}(25%) + "
+            f"Valuation:{vc[i]:.0f}(20%) + Strength:{fs[i]:.0f}(10%) + "
+            f"CashFlow:{cf[i]:.0f}(10%) = {composite[i]:.1f} [{band[i]}]"
         )
 
         # 2. Trace through the decision cascade
@@ -1328,6 +1419,10 @@ def build_decision_audit_sheet(m: pd.DataFrame, analysis_df: pd.DataFrame,
         if psev > 0:
             parts.append(f"Pricing severity {psev:.1f} from: {pf}.")
 
+        iv = industry_val[i] if pd.notna(industry_val[i]) else 'N/A'
+        if iv not in ('N/A', 'FAIR'):
+            parts.append(f"Vs industry: {iv}.")
+
         if eq != 'Clean':
             parts.append(f"Earnings quality: {eq}.")
 
@@ -1403,7 +1498,8 @@ def main():
         sys.exit(1)
     
     merged = merge_all(dfs)
-    
+    run_sanity_checks(merged)
+
     master_df = build_master_sheet(merged)
     valuation_df = build_valuation_sheet(merged)
     quality_df = build_quality_sheet(merged)
