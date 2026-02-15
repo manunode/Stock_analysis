@@ -5,6 +5,7 @@ Depends on: rules, data, engine.
 
 import logging
 import os
+import tempfile
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -84,17 +85,38 @@ def run_pipeline(base_dir: str, output_path: str) -> None:
     summary_df = build_summary_sheet(analysis_df)
 
     sort_idx = analysis_df['Composite_Score'].astype(float).argsort()[::-1]
+    analysis_isins = analysis_df['ISIN'].values
     analysis_df = analysis_df.iloc[sort_idx].reset_index(drop=True)
-    sheet_dfs = {n: df.iloc[sort_idx].reset_index(drop=True) for n, df in
-                 {'Master': master_df, 'Valuation': valuation_df, 'Quality': quality_df, 'Cash_Flow': cashflow_df,
-                  'Leverage': leverage_df, 'Growth': growth_df, 'Shareholding': shareholding_df,
-                  'Neglected_Firm': neglected_df, 'Dividends': dividends_df, 'Red_Flags': red_flags_df,
-                  'Decision_Audit': decision_audit_df}.items()}
+
+    other_sheets = {
+        'Master': master_df, 'Valuation': valuation_df, 'Quality': quality_df, 'Cash_Flow': cashflow_df,
+        'Leverage': leverage_df, 'Growth': growth_df, 'Shareholding': shareholding_df,
+        'Neglected_Firm': neglected_df, 'Dividends': dividends_df, 'Red_Flags': red_flags_df,
+        'Decision_Audit': decision_audit_df,
+    }
+    sheet_dfs = {}
+    for name, df in other_sheets.items():
+        if len(df) != len(analysis_isins):
+            raise RuntimeError(f"Sheet '{name}' has {len(df)} rows vs Analysis {len(analysis_isins)} — cannot sort safely")
+        if 'ISIN' in df.columns and not (df['ISIN'].values == analysis_isins).all():
+            raise RuntimeError(f"Sheet '{name}' ISIN order doesn't match Analysis — data misalignment detected")
+        sheet_dfs[name] = df.iloc[sort_idx].reset_index(drop=True)
 
     all_sheets = {'Analysis': analysis_df, **sheet_dfs, 'Summary': summary_df}
-    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-        for name, df in all_sheets.items():
-            df.to_excel(writer, sheet_name=name, index=False)
-        format_excel(writer, all_sheets)
+
+    # Atomic write: write to temp file first, then rename to final path
+    output_dir = os.path.dirname(output_path) or '.'
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix='.xlsx', dir=output_dir)
+        os.close(fd)
+        with pd.ExcelWriter(tmp_path, engine='xlsxwriter') as writer:
+            for name, df in all_sheets.items():
+                df.to_excel(writer, sheet_name=name, index=False)
+            format_excel(writer, all_sheets)
+        os.replace(tmp_path, output_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
     logging.info(f"Done! Output: {output_path} ({os.path.getsize(output_path)/1024/1024:.1f} MB)")

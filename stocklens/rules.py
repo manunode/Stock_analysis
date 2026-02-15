@@ -234,6 +234,7 @@ CONFIG = {
     'PROMOTER_BUY_THRESHOLD': 3.0,
     'PROMOTER_SELL_THRESHOLD': -3.0,
     'ETR_LOW_THRESHOLD': 0.15,  # 15% — suspicious when statutory rate is ~25%
+    'CONVICTION_SEVERITY_CAP': 4.0,  # Max quality severity for promoter-buying override
 }
 
 # ── Scoring Bins for pd.cut vectorization ───────────────────────────────────
@@ -254,6 +255,17 @@ SCORING_BINS = {
     'INTEREST_COVERAGE': {'bins': [-np.inf, 1, 2, 3, 5, 10, np.inf], 'labels': [0, 5, 10, 15, 20, 25], 'default': 8},
     'CURRENT_RATIO': {'bins': [-np.inf, 0.8, 1.0, 1.2, 1.5, 2.0, np.inf], 'labels': [1, 4, 8, 12, 16, 20], 'default': 5},
 }
+
+def _validate_scoring_bins():
+    """Validate that bins and labels lengths are consistent in SCORING_BINS."""
+    for name, cfg in SCORING_BINS.items():
+        n_bins, n_labels = len(cfg['bins']), len(cfg['labels'])
+        if n_bins != n_labels + 1:
+            raise ValueError(
+                f"SCORING_BINS['{name}']: {n_bins} bin edges requires {n_bins - 1} labels, got {n_labels}"
+            )
+
+_validate_scoring_bins()
 
 # ── Financial sector identification ─────────────────────────────────────────
 FINANCIAL_SECTORS_LOWER = frozenset(s.lower() for s in [

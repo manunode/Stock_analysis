@@ -33,7 +33,10 @@ def vectorized_score(series: pd.Series, bin_config: dict) -> pd.Series:
 
 def vectorized_string_build(n: int, conditions: List[np.ndarray], strings: List[str], separator: str = ', ') -> list:
     """
-    Build strings by concatenating based on conditions — TRUE VECTORIALIZATION.
+    Build strings by conditionally concatenating parts using np.where.
+
+    Not truly vectorized (O(n * m) object-array string ops), but avoids
+    an explicit Python loop over rows.
 
     Args:
         n: Number of rows

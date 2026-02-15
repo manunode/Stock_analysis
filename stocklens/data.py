@@ -58,13 +58,23 @@ def get_col(df: pd.DataFrame, metric_key: str, suffix_key: str = '', default=np.
 
 # ── Loading & merging ───────────────────────────────────────────────────────
 
+REQUIRED_FILES = {'annual'}
+OPTIONAL_FILES = set(PARQUET_FILENAMES.keys()) - REQUIRED_FILES
+
+
 def load_parquet_files(base_dir: str) -> Dict[str, pd.DataFrame]:
-    """Load all parquet files into a dict of DataFrames."""
+    """Load all parquet files into a dict of DataFrames.
+
+    Raises FileNotFoundError for missing required files (annual).
+    Logs warnings for missing optional files and continues.
+    """
     paths = parquet_paths(base_dir)
     dfs = {}
     for key, path in paths.items():
         if not os.path.exists(path):
-            logging.warning(f"Missing parquet file: {path}")
+            if key in REQUIRED_FILES:
+                raise FileNotFoundError(f"Required parquet file missing: {path}")
+            logging.warning(f"Optional parquet file missing (analysis may be incomplete): {path}")
             continue
         df = pd.read_parquet(path)
         logging.info(f"Loaded {key}: {df.shape[0]} stocks, {df.shape[1]} columns")

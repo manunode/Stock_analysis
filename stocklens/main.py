@@ -36,9 +36,12 @@ def main():
 
     try:
         run_pipeline(base_dir, args.output)
-    except RuntimeError as e:
+    except (RuntimeError, FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         sys.exit(1)
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}", exc_info=True)
+        sys.exit(2)
 
 
 if __name__ == '__main__':

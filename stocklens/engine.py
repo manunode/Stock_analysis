@@ -10,9 +10,26 @@ import pandas as pd
 from .rules import (
     COLS, CONFIG, SCORING_BINS, FINANCIAL_SECTORS_LOWER,
     STRUCTURAL_RED_FLAGS, PRICING_RED_FLAGS, RED_FLAG_DEFINITIONS,
+    IDENTIFIER_COLS,
 )
 from .primitives import safe_div, safe_str_lower, vectorized_score, vectorized_string_build
 from .data import col, get_col
+
+
+def _id_cols(source) -> dict:
+    """Build the standard identifier columns dict from a DataFrame or values source."""
+    if isinstance(source, pd.DataFrame):
+        return {
+            'ISIN': source[COLS['ISIN_CODE']],
+            'NSE_Code': source[COLS['NSE_CODE']],
+            'BSE_Code': source[COLS['BSE_CODE']],
+        }
+    # Assume it's an array-like with .values already extracted
+    return {
+        'ISIN': source['ISIN'].values if hasattr(source, 'values') else source['ISIN'],
+        'NSE_Code': source['NSE_Code'].values if hasattr(source, 'values') else source['NSE_Code'],
+        'BSE_Code': source['BSE_Code'].values if hasattr(source, 'values') else source['BSE_Code'],
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -24,7 +41,7 @@ def build_master_sheet(m: pd.DataFrame) -> pd.DataFrame:
     is_fin = safe_str_lower(m[COLS['INDUSTRY_GROUP']]).isin(FINANCIAL_SECTORS_LOWER) | \
              safe_str_lower(m[COLS['INDUSTRY']]).isin(FINANCIAL_SECTORS_LOWER)
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Stock_Name': m[COLS['NAME']], 'Sector': m[COLS['INDUSTRY_GROUP']], 'Industry': m[COLS['INDUSTRY']],
         'Market_Cap': m[COLS['MARKET_CAP']], 'Current_Price': m[COLS['CURRENT_PRICE']],
         'Is_Financial_Sector': is_fin.map({True: 'Yes', False: 'No'}),
@@ -65,7 +82,7 @@ def build_valuation_sheet(m: pd.DataFrame) -> pd.DataFrame:
                          np.where(avg_vs_industry <= 1.5, 'PREMIUM', 'VERY_EXPENSIVE'))))
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'PE': pe, 'PBV': pbv, 'EV_EBITDA': get_col(m, 'EVEBITDA', 'USER_RATIOS'),
         'PEG': get_col(m, 'PEG_RATIO', 'USER_RATIOS'), 'Price_To_Sales': get_col(m, 'PRICE_TO_SALES', 'USER_RATIOS'),
         'Earnings_Yield': safe_div(100.0, pe), 'Valuation_Band': val_band, 'Valuation_Comfort_Score': val_comfort,
@@ -127,7 +144,7 @@ def build_quality_sheet(m: pd.DataFrame) -> pd.DataFrame:
     etr_py = etr_py.clip(-1.0, 1.0)
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Business_Quality_Score': bq_score,
         'Earnings_Quality': np.where(pd.isna(bq_score), 'N/A', np.where(bq_score >= 70, 'HIGH',
                                     np.where(bq_score >= 50, 'MODERATE', np.where(bq_score >= 30, 'LOW', 'POOR')))),
@@ -168,7 +185,12 @@ def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
     sales = pd.Series(get_col(m, 'SALES', 'ANNUAL'), dtype=float)
     sales_ly = pd.Series(get_col(m, 'SALES_LAST_YEAR', 'ANNUAL'), dtype=float)
 
-    # TTM PAT from quarterly data with stub-period guard
+    # TTM PAT from quarterly data with stub-period guard.
+    # Guard: if any single quarter exceeds 60% of TTM total, the TTM figure is
+    # unreliable (likely a stub period or one-off event). In that case we fall
+    # back to annual PAT. This is deliberately conservative — seasonal businesses
+    # (e.g., agriculture) may trigger this, but using annual PAT is safer than a
+    # distorted TTM figure.
     np_q1 = pd.Series(get_col(m, 'NP_Q1', 'QUARTERLY'), dtype=float)
     np_q2 = pd.Series(get_col(m, 'NP_Q2', 'QUARTERLY'), dtype=float)
     np_q3 = pd.Series(get_col(m, 'NP_Q3', 'QUARTERLY'), dtype=float)
@@ -226,7 +248,7 @@ def build_cashflow_sheet(m: pd.DataFrame) -> pd.DataFrame:
     cfi_cfo_ratio = safe_div(np.abs(cfi_3yr), cfo_3yr)
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'CFO_Latest': cfo, 'PAT_Latest': pat, 'PAT_TTM': pat_ttm, 'PAT_Annual': pat_annual,
         'CFO_PAT_Latest': cfo_pat, 'CFO_PAT_3Yr_Avg': cfo_pat_3yr_avg,
         'Positive_CFO_Years_3Yr': pos_cfo_count, 'CFO_Year3_Inferred': cfo_yr3_inferred,
@@ -283,7 +305,7 @@ def build_leverage_sheet(m: pd.DataFrame) -> pd.DataFrame:
     debt_py = pd.Series(get_col(m, 'DEBT_PY', 'BALANCE'), dtype=float)
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Debt_Equity': de, 'Interest_Coverage': ic, 'Debt_Trend': debt_trend,
         'Financial_Strength_Score': fin_strength, 'Current_Ratio': current_ratio,
         'Total_Debt': debt, 'Debt_3Yr_Back': debt_3yr, 'Debt_Preceding_Year': debt_py,
@@ -332,7 +354,7 @@ def build_growth_sheet(m: pd.DataFrame) -> pd.DataFrame:
     )
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Revenue_Growth_1Yr': safe_div(sales - sales_ly, np.abs(sales_ly)) * 100,
         'Revenue_Growth_3Yr': sales_g3, 'Profit_Growth_3Yr': profit_g3,
         'EBITDA_Growth_3Yr': get_col(m, 'EBITDA_GROWTH_3Y', 'ANNUAL'),
@@ -352,7 +374,7 @@ def build_shareholding_sheet(m: pd.DataFrame) -> pd.DataFrame:
     fii = pd.Series(get_col(m, 'FII_HOLDING', 'RATIOS'), dtype=float)
     dii = pd.Series(get_col(m, 'DII_HOLDING', 'RATIOS'), dtype=float)
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Promoter_Holding': promoter, 'Promoter_Change_3Yr': get_col(m, 'PROMOTER_CHANGE_3Y', 'ANNUAL'),
         'Institutional_Holding': fii.fillna(0) + dii.fillna(0),
         'Num_Shareholders': get_col(m, 'NUM_SHAREHOLDERS', 'RATIOS'),
@@ -389,7 +411,7 @@ def build_neglected_firm_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, levera
     )
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Generic_Stock_Candidate': generic_candidate, 'Neglect_Score': neglect_score,
         'Neglect_Reasons': reasons, 'Institutional_Holding': inst, 'ROE_5Yr_Avg': roe_5,
         'Debt_Equity': de, 'Market_Cap': mcap, 'Num_Shareholders': num_sh,
@@ -399,7 +421,7 @@ def build_neglected_firm_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, levera
 def build_dividends_sheet(m: pd.DataFrame) -> pd.DataFrame:
     """Build dividends sheet."""
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Dividend_Last_Year': get_col(m, 'DIVIDEND_LAST_YEAR', 'ANNUAL'),
         'Dividend_Payout': get_col(m, 'DIVIDEND_PAYOUT', 'USER_RATIOS'),
     })
@@ -628,7 +650,8 @@ def build_red_flags_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, cashflow_df
                        np.where(cyclic_signals >= 1, 'MODERATE', 'LOW'))
 
     rf_data = {
-        'ISIN': m[COLS['ISIN_CODE']].values, 'NSE_Code': m[COLS['NSE_CODE']].values, 'BSE_Code': m[COLS['BSE_CODE']].values,
+        'ISIN': m[COLS['ISIN_CODE']].values, 'NSE_Code': m[COLS['NSE_CODE']].values,
+        'BSE_Code': m[COLS['BSE_CODE']].values,
         'Quality_Risk': quality_risk, 'Quality_Severity': np.round(quality_severity, 1),
         'Pricing_Severity': np.round(pricing_severity, 1), 'Total_Severity': np.round(quality_severity + pricing_severity, 1),
         'Critical_Flags': critical_count.astype(int), 'Major_Flags': major_count.astype(int),
@@ -703,7 +726,7 @@ def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df
     for i in range(n):
         pchg = promoter_chg[i]
         if pd.isna(pchg): continue
-        if decision[i] in ('SCREEN_FAILED', 'SCREEN_MARGINAL') and pchg >= CONFIG['PROMOTER_BUY_THRESHOLD'] and quality_severity[i] < 4.0:
+        if decision[i] in ('SCREEN_FAILED', 'SCREEN_MARGINAL') and pchg >= CONFIG['PROMOTER_BUY_THRESHOLD'] and quality_severity[i] < CONFIG['CONVICTION_SEVERITY_CAP']:
             decision[i], conviction_override[i] = 'CONTRARIAN_BET', f"Promoter buying +{pchg:.1f}%"
         elif decision[i] in ('GATES_CLEARED', 'SCREEN_PASSED_EXPENSIVE') and pchg <= CONFIG['PROMOTER_SELL_THRESHOLD']:
             decision[i], conviction_override[i] = 'VALUE_TRAP', f"Promoter selling {pchg:.1f}%"
@@ -716,7 +739,7 @@ def build_analysis_sheet(m: pd.DataFrame, quality_df: pd.DataFrame, valuation_df
              np.where(decision == 'VALUE_TRAP', 'Good score but insiders exiting', ''))))))
 
     return pd.DataFrame({
-        'ISIN': m[COLS['ISIN_CODE']], 'NSE_Code': m[COLS['NSE_CODE']], 'BSE_Code': m[COLS['BSE_CODE']],
+        **_id_cols(m),
         'Decision_Bucket': decision, 'MCAP': mcap, 'Conviction_Override': conviction_override,
         'SCREEN_ELIGIBLE': np.where(quality_severity >= CONFIG['SEVERITY_FAILED_THRESHOLD'], 'NO', 'YES'),
         'Investment_Thesis': thesis, 'Reject_Reason': reject_reason,
@@ -769,24 +792,18 @@ def add_peer_ranking(analysis_df: pd.DataFrame, quality_df: pd.DataFrame,
 
     peer_rank = peer_score.rank(ascending=False, method='min').astype(int)
 
-    breakdown = []
-    for i in range(len(survivor_data)):
-        breakdown.append(
-            f"ROE:{roe_pctile.iloc[i]*100:.0f}p "
-            f"ROCE:{roce_pctile.iloc[i]*100:.0f}p "
-            f"CFO:{cfo_pctile.iloc[i]*100:.0f}p "
-            f"Debt:{de_pctile.iloc[i]*100:.0f}p "
-            f"ValRel:{val_pctile.iloc[i]*100:.0f}p"
-        )
+    breakdown = [
+        f"ROE:{r*100:.0f}p ROCE:{rc*100:.0f}p CFO:{c*100:.0f}p Debt:{d*100:.0f}p ValRel:{v*100:.0f}p"
+        for r, rc, c, d, v in zip(roe_pctile, roce_pctile, cfo_pctile, de_pctile, val_pctile)
+    ]
 
     analysis_df['Peer_Rank'] = np.nan
     analysis_df['Peer_Percentile'] = np.nan
     analysis_df['Peer_Rank_Breakdown'] = ''
 
-    for j, orig_idx in enumerate(survivor_idx):
-        analysis_df.at[orig_idx, 'Peer_Rank'] = peer_rank.iloc[j]
-        analysis_df.at[orig_idx, 'Peer_Percentile'] = np.round(peer_score.iloc[j] * 100, 1)
-        analysis_df.at[orig_idx, 'Peer_Rank_Breakdown'] = breakdown[j]
+    analysis_df.loc[survivor_idx, 'Peer_Rank'] = peer_rank.values
+    analysis_df.loc[survivor_idx, 'Peer_Percentile'] = np.round(peer_score.values * 100, 1)
+    analysis_df.loc[survivor_idx, 'Peer_Rank_Breakdown'] = breakdown
 
     survivor_count = is_survivor.sum()
     logging.info(f"Peer ranking: {survivor_count} survivors ranked "
