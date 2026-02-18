@@ -43,6 +43,7 @@ def get_col(df: pd.DataFrame, metric_key: str, suffix_key: str = '', default=np.
     Get column from DataFrame with fallback to default and alias support.
 
     Handles column aliases for typos/variants in source data (e.g., EBITDA vs EBIDT).
+    Always returns a column-shaped Series when the input is a DataFrame.
     """
     if metric_key in COL_ALIASES:
         for alias in COL_ALIASES[metric_key]:
@@ -53,10 +54,37 @@ def get_col(df: pd.DataFrame, metric_key: str, suffix_key: str = '', default=np.
     col_name = col(metric_key, suffix_key)
     if col_name in df.columns:
         return df[col_name]
+
+    if isinstance(df, pd.DataFrame):
+        return pd.Series(default, index=df.index)
     return default
 
 
 # ── Loading & merging ───────────────────────────────────────────────────────
+
+def _dedupe_on_isin(df: pd.DataFrame, file_key: str) -> pd.DataFrame:
+    """Ensure one row per ISIN to avoid merge row-multiplication on duplicates."""
+    if COLS['ISIN_CODE'] not in df.columns:
+        return df
+
+    dup_mask = df.duplicated(subset=[COLS['ISIN_CODE']], keep=False)
+    if not dup_mask.any():
+        return df
+
+    dup_count = int(dup_mask.sum())
+    uniq_dup_isins = int(df.loc[dup_mask, COLS['ISIN_CODE']].nunique())
+    if file_key == 'annual':
+        raise ValueError(
+            f"annual has {dup_count} duplicate rows across {uniq_dup_isins} ISINs; "
+            "cannot build a stable base universe"
+        )
+
+    logging.warning(
+        f"{file_key} has {dup_count} duplicate rows across {uniq_dup_isins} ISINs; "
+        "keeping first occurrence per ISIN for stable merges"
+    )
+    return df.drop_duplicates(subset=[COLS['ISIN_CODE']], keep='first').copy()
+
 
 REQUIRED_FILES = {'annual'}
 OPTIONAL_FILES = set(PARQUET_FILENAMES.keys()) - REQUIRED_FILES
@@ -77,6 +105,7 @@ def load_parquet_files(base_dir: str) -> Dict[str, pd.DataFrame]:
             logging.warning(f"Optional parquet file missing (analysis may be incomplete): {path}")
             continue
         df = pd.read_parquet(path)
+        df = _dedupe_on_isin(df, key)
         logging.info(f"Loaded {key}: {df.shape[0]} stocks, {df.shape[1]} columns")
         dfs[key] = df
     return dfs
@@ -103,9 +132,15 @@ def merge_all(dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         available_cols = [c for c in required_base_cols if c in dfs['annual'].columns]
         if COLS['ISIN_CODE'] not in available_cols:
             raise ValueError("ISIN Code is required but missing from annual file")
+        if COLS['NAME'] not in available_cols:
+            raise ValueError("Stock Name is required but missing from annual file")
         required_base_cols = available_cols
 
     merged = dfs['annual'][required_base_cols].copy()
+    # Ensure downstream builders always find expected base columns.
+    for base_col in required_base_cols:
+        if base_col not in merged.columns:
+            merged[base_col] = np.nan
     drop_cols = {COLS['NAME'], COLS['BSE_CODE'], COLS['NSE_CODE'], COLS['ISIN_CODE'],
                  COLS['INDUSTRY_GROUP'], COLS['INDUSTRY'], COLS['CURRENT_PRICE'], COLS['MARKET_CAP']}
 

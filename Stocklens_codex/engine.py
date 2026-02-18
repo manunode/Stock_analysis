@@ -19,10 +19,16 @@ from .data import col, get_col
 def _id_cols(source) -> dict:
     """Build the standard identifier columns dict from a DataFrame or values source."""
     if isinstance(source, pd.DataFrame):
+        nan_series = pd.Series(np.nan, index=source.index)
+        isin = source[COLS['ISIN_CODE']] if COLS['ISIN_CODE'] in source.columns else nan_series
+        nse = source[COLS['NSE_CODE']] if COLS['NSE_CODE'] in source.columns else nan_series
+        bse = source[COLS['BSE_CODE']] if COLS['BSE_CODE'] in source.columns else nan_series
+        if COLS['ISIN_CODE'] not in source.columns:
+            raise ValueError("ISIN Code is required for identifier columns")
         return {
-            'ISIN': source[COLS['ISIN_CODE']],
-            'NSE_Code': source[COLS['NSE_CODE']],
-            'BSE_Code': source[COLS['BSE_CODE']],
+            'ISIN': isin,
+            'NSE_Code': nse,
+            'BSE_Code': bse,
         }
     # Assume it's an array-like with .values already extracted
     return {
